@@ -91,6 +91,52 @@ class AppTests(unittest.TestCase):
         self.assertIn('maxlength="128"', page)
         self.assertIn('maxlength="10000"', page)
 
+    def test_conversation_and_system_log_panels_are_independent(self) -> None:
+        page = self.client.get("/").get_data(as_text=True)
+        for value in ('id="conversation-output"', 'id="conversation-session"',
+                      'class="session-list-placeholder"', 'id="output-log"',
+                      '>Conversation<', '>Status / System Log<', '>Clear Log<'):
+            self.assertIn(value, page)
+
+        response = self.client.get("/static/css/style.css")
+        try:
+            css = response.get_data(as_text=True)
+            self.assertIn("grid-template-columns: 18fr 23fr 39fr 20fr", css)
+            self.assertIn(".conversation-output { flex: 1; min-height: 0;", css)
+            self.assertIn(".terminal { flex: 1; min-height: 0;", css)
+            self.assertIn("@media (max-width: 1200px)", css)
+        finally:
+            response.close()
+
+    def test_conversation_output_is_session_scoped_and_text_only(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            self.assertIn("const conversations = new Map()", script)
+            self.assertIn("appendConversation(sessionId, \"user\", message)", script)
+            self.assertIn("appendConversation(sessionId, \"assistant\", result.message)", script)
+            self.assertIn("conversationSession.textContent", script)
+            self.assertIn("text.textContent = content", script)
+            self.assertIn("conversations.delete(sessionId)", script)
+            self.assertNotIn("innerHTML", script)
+        finally:
+            response.close()
+
+    def test_clear_log_only_targets_system_log(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            self.assertIn(
+                'clearOutputButton.addEventListener("click", () => { outputLog.replaceChildren(); })',
+                script,
+            )
+            self.assertNotIn(
+                'clearOutputButton.addEventListener("click", () => { conversationOutput',
+                script,
+            )
+        finally:
+            response.close()
+
     def test_tool_console_script_covers_safety_and_api_contracts(self) -> None:
         response = self.client.get("/static/js/main.js")
         try:

@@ -80,9 +80,22 @@
         <p class="lock-note" id="lock-note">입력 보호가 활성화되어 있습니다. Health와 Reset은 실행할 수 있습니다.</p>
       </section>
 
+      <section class="conversation-panel panel" aria-labelledby="conversation-title">
+        <div class="conversation-header">
+          <div class="panel-heading compact"><span class="panel-index">E</span><div><h2 id="conversation-title">Conversation</h2><p id="conversation-session">SESSION · default</p></div></div>
+        </div>
+        <div class="conversation-output" id="conversation-output" role="log" aria-live="polite" aria-label="현재 세션 대화">
+          <p class="conversation-empty" id="conversation-empty">Chat을 실행하면 현재 세션의 대화가 여기에 표시됩니다.</p>
+        </div>
+        <div class="session-list-placeholder" aria-labelledby="session-list-title">
+          <div><strong id="session-list-title">Session List</strong><span>RAM SESSIONS</span></div>
+          <p>세션 목록은 STEP 5-6-3에서 연결됩니다.</p>
+        </div>
+      </section>
+
       <section class="output-panel panel" aria-labelledby="output-title">
-        <div class="output-header"><div class="panel-heading compact inverse"><span class="panel-index">E</span><div><h2 id="output-title">Status / Output</h2><p>READ ONLY</p></div></div><button id="clear-output" type="button">Clear</button></div>
-        <div class="terminal" id="output-log" role="log" aria-live="polite" aria-label="API 실행 로그"></div>
+        <div class="output-header"><div class="panel-heading compact inverse"><span class="panel-index">F</span><div><h2 id="output-title">Status / System Log</h2><p>TECHNICAL EVENTS</p></div></div><button id="clear-output" type="button">Clear Log</button></div>
+        <div class="terminal" id="output-log" role="log" aria-live="polite" aria-label="API 및 시스템 로그"></div>
       </section>
     </div>
   </div>

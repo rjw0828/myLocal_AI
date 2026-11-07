@@ -26,8 +26,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const lockNote = $("#lock-note");
   const clearOutputButton = $("#clear-output");
   const outputLog = $("#output-log");
+  const conversationSession = $("#conversation-session");
+  const conversationOutput = $("#conversation-output");
+  const conversationEmpty = $("#conversation-empty");
   let selectedTool = "health";
   let requestRunning = false;
+  const conversations = new Map();
+  let currentConversationSession = sessionInput.value.trim() || "default";
 
   class ApiError extends Error {
     constructor(message, status = null, code = null) {
@@ -157,10 +162,44 @@ document.addEventListener("DOMContentLoaded", () => {
     outputLog.scrollTop = outputLog.scrollHeight;
   };
 
+  const renderConversation = (sessionId) => {
+    currentConversationSession = sessionId;
+    conversationSession.textContent = `SESSION · ${sessionId}`;
+    conversationOutput.replaceChildren();
+    const messages = conversations.get(sessionId) || [];
+    if (messages.length === 0) {
+      conversationOutput.append(conversationEmpty);
+      return;
+    }
+    messages.forEach(({ role, content }) => {
+      const entry = document.createElement("article");
+      entry.className = `conversation-message is-${role}`;
+      const label = document.createElement("span");
+      label.className = "conversation-role";
+      label.textContent = role === "user" ? "YOU" : "AI";
+      const text = document.createElement("p");
+      text.className = "conversation-text";
+      text.textContent = content;
+      entry.append(label, text);
+      conversationOutput.append(entry);
+    });
+    conversationOutput.scrollTop = conversationOutput.scrollHeight;
+  };
+
+  const setConversationSession = (sessionId) => {
+    renderConversation(sessionId || "(empty)");
+  };
+
+  const appendConversation = (sessionId, role, content) => {
+    const messages = conversations.get(sessionId) || [];
+    messages.push({ role, content });
+    conversations.set(sessionId, messages);
+    if (currentConversationSession === sessionId) renderConversation(sessionId);
+  };
+
   const secondsFromNanoseconds = (value) => `${(value / 1_000_000_000).toFixed(3)}s`;
-  const formatChatResult = (data) => {
+  const formatChatMetrics = (data) => {
     const lines = [];
-    if (typeof data.message === "string") lines.push(`AI: ${data.message}`);
     if (typeof data.elapsed_seconds === "number") lines.push(`Elapsed: ${data.elapsed_seconds.toFixed(3)}s`);
     const metrics = data.metrics && typeof data.metrics === "object" ? data.metrics : {};
     if (typeof metrics.eval_count === "number") lines.push(`Generated tokens: ${metrics.eval_count}`);
@@ -230,6 +269,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const apiLabel = selectedTool === "health" ? "GET /health" : selectedTool === "chat" ? "POST /chat" : `POST /sessions/${sessionId}/reset`;
+    if (selectedTool === "chat") {
+      setConversationSession(sessionId);
+      appendConversation(sessionId, "user", message);
+    }
     appendLog("RUNNING", apiLabel, "요청을 전송했습니다.");
     setRequestRunning(true);
     try {
@@ -242,9 +285,15 @@ document.addEventListener("DOMContentLoaded", () => {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId, message }),
         }));
-        appendLog("SUCCESS", apiLabel, formatChatResult(result));
+        if (typeof result.message !== "string" || !result.message.trim()) {
+          throw new ApiError("AI response is empty or invalid.", 502, "invalid_ollama_response");
+        }
+        appendConversation(sessionId, "assistant", result.message);
+        appendLog("SUCCESS", apiLabel, formatChatMetrics(result));
       } else {
         result = requireSuccess(await requestJson(`/sessions/${encodeURIComponent(sessionId)}/reset`, { method: "POST" }));
+        conversations.delete(sessionId);
+        if (currentConversationSession === sessionId) renderConversation(sessionId);
         appendLog("SUCCESS", apiLabel, `Session '${result.session_id}' reset complete.`);
       }
     } catch (error) {
@@ -257,6 +306,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const activateTool = async (tool) => {
     selectTool(tool);
     if (tool === "chat") {
+      setConversationSession(sessionInput.value.trim() || "(empty)");
       if (lockButton.getAttribute("aria-pressed") !== "true") messageInput.focus();
       return;
     }
@@ -268,14 +318,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const online = serverToggle.dataset.online === "true";
     if (online && !window.confirm("Ollama 서버를 종료할까요? 이 콘솔뿐 아니라 다른 프로그램에서 진행 중인 Ollama 작업도 중단될 수 있습니다.")) return;
     serverToggle.disabled = true;
+    const apiLabel = `POST /ollama/${online ? "stop" : "start"}`;
+    appendLog("RUNNING", apiLabel, online ? "Stopping Ollama server." : "Starting Ollama server.");
     setStatus(serverStatus, online ? "Stopping…" : "Starting…", "pending");
     try {
       requireSuccess(await requestJson(`/ollama/${online ? "stop" : "start"}`, {
         method: "POST",
         headers: { "X-Local-AI-Control": "web-console" },
       }));
+      appendLog("SUCCESS", apiLabel, online ? "Ollama stop request completed." : "Ollama start request completed.");
     } catch (error) {
       healthMessage.textContent = errorMessage(error);
+      appendLog("ERROR", apiLabel, errorMessage(error));
     } finally {
       await refreshHealth();
     }
@@ -287,7 +341,10 @@ document.addEventListener("DOMContentLoaded", () => {
   toolButtons.forEach((button) => button.addEventListener("click", () => activateTool(button.dataset.tool)));
   serverToggle.addEventListener("click", toggleOllamaServer);
   messageInput.addEventListener("input", updateInputState);
-  sessionInput.addEventListener("input", updateInputState);
+  sessionInput.addEventListener("input", () => {
+    updateInputState();
+    setConversationSession(sessionInput.value.trim() || "(empty)");
+  });
   messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -312,5 +369,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   appendLog("READY", "SYSTEM", "Local controller console initialized. Health Check is selected.");
+  renderConversation(currentConversationSession);
   updateInputState();
 });
