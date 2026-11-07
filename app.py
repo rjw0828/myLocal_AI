@@ -15,7 +15,7 @@ from werkzeug.exceptions import HTTPException
 
 import ai_controller
 import ollama_runtime
-from voice import stt_service
+from voice import stt_service, tts_service
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -26,6 +26,15 @@ MAX_ACTIVE_SESSIONS = 60
 MAX_STT_AUDIO_BYTES = 10 * 1024 * 1024
 # Multipart boundaries and headers sit outside the audio field itself.
 MAX_STT_REQUEST_LENGTH = MAX_STT_AUDIO_BYTES + 64 * 1024
+MAX_TTS_TEXT_LENGTH = 500
+RESPONSE_LANGUAGE_PROMPTS = {
+    "ko": "You are a personal local AI assistant. Answer clearly and concisely in Korean, using Hangul. Use Korean for this response even if the question or earlier conversation is in English. Do not answer in English or Chinese.",
+    "en": "You are a personal local AI assistant. Answer clearly and concisely in English. Use English for this response, even if earlier conversation is in Korean.",
+}
+VOICE_RESPONSE_STYLE = (
+    " This turn is a spoken conversation. Reply naturally in 1–3 short sentences, "
+    "aiming for at most 400 Unicode characters. Avoid tables and long lists."
+)
 METRIC_FIELDS = (
     "total_duration", "load_duration", "prompt_eval_count",
     "prompt_eval_duration", "eval_count", "eval_duration",
@@ -95,6 +104,12 @@ def create_app() -> Flask:
     def error_response(code: str, message: str, status: int) -> tuple[Response, int]:
         return jsonify(error={"code": code, "message": message}), status
 
+    def server_timing_header(**durations: float) -> str:
+        return ", ".join(
+            f"{name};dur={max(0.0, seconds) * 1000:.3f}"
+            for name, seconds in durations.items()
+        )
+
     def require_local_control_header() -> tuple[Response, int] | None:
         if request.headers.get("X-Local-AI-Control") != "web-console":
             return error_response("control_header_required", "로컬 콘솔 제어 헤더가 필요합니다.", 403)
@@ -132,6 +147,13 @@ def create_app() -> Flask:
             return error_response("invalid_message", "message는 비어 있지 않은 문자열이어야 합니다.", 400)
         if len(message) > MAX_MESSAGE_LENGTH:
             return error_response("invalid_message", f"message는 {MAX_MESSAGE_LENGTH:,}자 이하여야 합니다.", 400)
+        response_language = data.get("response_language")
+        if "response_language" in data and (
+                not isinstance(response_language, str)
+                or response_language not in RESPONSE_LANGUAGE_PROMPTS):
+            return error_response(
+                "invalid_response_language", "response_language must be ko or en.", 400,
+            )
 
         started = time.perf_counter()
         try:
@@ -149,8 +171,23 @@ def create_app() -> Flask:
                 messages = session.messages or [
                     {"role": "system", "content": ai_controller.SYSTEM_PROMPT},
                 ]
+                if response_language is not None:
+                    # Replace the existing system instruction without mutating stored
+                    # history until the request succeeds. Never accumulate prompts.
+                    messages = [
+                        {"role": "system", "content": RESPONSE_LANGUAGE_PROMPTS[response_language]},
+                        *[item for item in messages if item["role"] != "system"],
+                    ]
                 user_message = {"role": "user", "content": message}
-                result = ai_controller.ask_ollama(messages + [user_message])
+                request_messages = messages
+                if request.headers.get("X-Local-AI-Response-Style") == "voice":
+                    request_messages = [
+                        {"role": "system", "content": messages[0]["content"] + VOICE_RESPONSE_STYLE},
+                        *messages[1:],
+                    ]
+                ollama_started = time.perf_counter()
+                result = ai_controller.ask_ollama(request_messages + [user_message])
+                ollama_seconds = time.perf_counter() - ollama_started
                 if not isinstance(result, dict) or result.get("error"):
                     raise InvalidOllamaResponse()
                 assistant = result.get("message")
@@ -187,11 +224,17 @@ def create_app() -> Flask:
             release_session(session_id, session,
                             failed_creation=created and not committed,
                             committed=committed)
-        return jsonify(
+        elapsed_seconds = time.perf_counter() - started
+        response = jsonify(
             session_id=session_id, model=ai_controller.MODEL,
-            message=answer["content"], elapsed_seconds=time.perf_counter() - started,
+            message=answer["content"], elapsed_seconds=elapsed_seconds,
             metrics=metrics,
-        ), 200
+        )
+        response.headers["Server-Timing"] = server_timing_header(
+            ollama=ollama_seconds,
+            total=elapsed_seconds,
+        )
+        return response, 200
 
     @app.post("/voice/transcribe")
     def transcribe_voice() -> tuple[Response, int]:
@@ -208,6 +251,7 @@ def create_app() -> Flask:
             audio_bytes = audio.stream.read(MAX_STT_AUDIO_BYTES + 1)
         finally:
             audio.close()
+        upload_read_seconds = time.perf_counter() - started
         if not audio_bytes:
             return error_response("audio_empty", "The audio file is empty.", 400)
         if len(audio_bytes) > MAX_STT_AUDIO_BYTES:
@@ -244,11 +288,72 @@ def create_app() -> Flask:
             return error_response(
                 "stt_empty_result", "No speech could be recognized.", 422,
             )
-        return jsonify(
+        elapsed_seconds = time.perf_counter() - started
+        response = jsonify(
             text=result.text,
             language=result.language,
-            elapsed_seconds=time.perf_counter() - started,
-        ), 200
+            elapsed_seconds=elapsed_seconds,
+        )
+        response.headers["Server-Timing"] = server_timing_header(
+            upload=upload_read_seconds,
+            decode=result.decode_seconds,
+            stt_model=result.model_load_seconds,
+            whisper=result.inference_seconds,
+            total=elapsed_seconds,
+        )
+        return response, 200
+
+    @app.post("/voice/synthesize")
+    def synthesize_voice() -> Response | tuple[Response, int]:
+        started = time.perf_counter()
+        if not request.is_json:
+            return error_response(
+                "unsupported_media_type", "Content-Type must be application/json.", 415,
+            )
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return error_response("invalid_json", "A valid JSON object is required.", 400)
+        if "text" not in data:
+            return error_response("text_missing", "The text field is required.", 400)
+        text = data["text"]
+        if not isinstance(text, str):
+            return error_response("invalid_tts_text", "text must be a string.", 400)
+        if not text.strip():
+            return error_response("text_empty", "text must not be empty.", 400)
+        if len(text) > MAX_TTS_TEXT_LENGTH:
+            return error_response(
+                "text_too_long", f"text must not exceed {MAX_TTS_TEXT_LENGTH} characters.", 413,
+            )
+        language = data.get("language")
+        if not isinstance(language, str) or language not in tts_service.VOICE_NAMES:
+            return error_response(
+                "invalid_tts_language", "language must be one of: ko, en.", 400,
+            )
+        try:
+            result = tts_service.synthesize_text(text, language)
+        except tts_service.TtsBusyError:
+            return error_response(
+                "tts_busy", "Another speech synthesis request is running.", 429,
+            )
+        except tts_service.TtsModelMissingError:
+            return error_response(
+                "tts_model_missing", "The local voice model is unavailable.", 503,
+            )
+        except tts_service.TtsInitializationError:
+            return error_response(
+                "tts_initialization_failed", "Speech synthesis could not initialize.", 503,
+            )
+        except tts_service.TtsInferenceError:
+            return error_response("tts_inference_failed", "Speech synthesis failed.", 500)
+        response = Response(result.audio, status=200, mimetype="audio/wav")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Length"] = str(len(result.audio))
+        response.headers["Server-Timing"] = server_timing_header(
+            piper_model=result.model_load_seconds,
+            piper=result.synthesis_seconds,
+            total=time.perf_counter() - started,
+        )
+        return response
 
     @app.post("/sessions/<session_id>/reset")
     def reset(session_id: str) -> Response | tuple[Response, int]:

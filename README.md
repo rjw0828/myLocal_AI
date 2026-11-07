@@ -24,21 +24,15 @@ Local AI Lab은 개인 Windows PC에서 로컬 AI를 학습·실험하고 제어
 
 ## 설치
 
-Python과 Ollama가 설치되어 있어야 합니다. Python 패키지는 Flask 하나만 직접 설치하면 되며 Werkzeug 등 필요한 의존성은 함께 설치됩니다.
-
-```powershell
-cd F:\LLM\AI_Project\myLocalAI
-python -m pip install Flask==3.1.2
-```
-
-로컬 음성 인식을 사용할 때는 프로젝트 가상환경에서 Flask와 faster-whisper를 함께 실행합니다.
+Python과 Ollama가 설치되어 있어야 합니다. Flask, 로컬 STT와 TTS는 프로젝트 가상환경에서 함께 실행합니다.
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install faster-whisper==1.2.1 Flask==3.1.2 Werkzeug==3.1.5 Jinja2==3.1.6 itsdangerous==2.2.0 blinker==1.9.0 MarkupSafe==3.0.3
+.\.venv\Scripts\python.exe -m pip install faster-whisper==1.2.1 piper-tts==1.8.0 Flask==3.1.2 Werkzeug==3.1.5 Jinja2==3.1.6 itsdangerous==2.2.0 blinker==1.9.0 MarkupSafe==3.0.3
 ```
 
 STT 모델은 `F:\LLM\Models\speech\whisper\faster-whisper-small`에 별도로 준비하며 Git에 추가하지 않습니다.
+Piper 모델은 `F:\LLM\Models\speech\piper` 아래의 `ko_KR-kss-medium`, `en_US-lessac-medium` 디렉터리에 `.onnx`와 `.onnx.json` 파일을 함께 둡니다.
 
 설치된 모델을 확인합니다.
 
@@ -126,18 +120,46 @@ Ollama 서버 종료는 Web UI의 상태 버튼 또는 Windows 프로세스 종�
 - 잠금은 오조작 방지 기능이며 인증이나 접근 제어가 아닙니다.
 - Unlock 후 `Record`를 누르면 Push-to-Talk 녹음을 시작하고 `Stop`을 누르면 로컬 STT를 실행합니다.
 - 언어는 Auto, 한국어, English 중 선택하며 최대 녹음 시간은 30초입니다.
-- 인식된 문장은 Message에만 반영되며 Chat으로 자동 전송되지 않습니다.
+- 수동 모드에서 인식된 문장은 Message에만 반영되며 Chat으로 자동 전송되지 않습니다.
 - 기존 Message가 있으면 확인 후 교체하며, 녹음 중 Session ID가 바뀌면 결과를 적용하지 않습니다.
 - 브라우저 마이크 권한이 필요하며 음성 원본은 브라우저 메모리와 STT 요청 처리 중에만 유지됩니다.
 
-### E — Status / Output
+#### Voice Conversation (선택적 자동 음성 대화)
+
+- 기본값은 OFF이며 새로고침하면 OFF로 돌아옵니다. ON으로 변경하는 것만으로 마이크나 API는 실행하지 않습니다.
+- Unlock 후 `Voice Conversation ON`으로 바꾸고 언어 프리셋을 선택합니다. 한국어는 STT/답변 `ko→ko`, 영어는 `en→en`으로 설정합니다. 기존 STT Auto와 E의 AI Language도 사용할 수 있습니다.
+- D Message가 비어 있을 때 Record를 누르면 한 턴을 시작합니다. `Stop & Send` 또는 30초 제한으로 녹음을 끝내면 STT → Chat → TTS → 재생을 순서대로 실행합니다. 완료 후 마이크는 꺼지고 다음 Record를 기다립니다.
+- 인식된 질문과 AI 답변은 E에 표시하며 D의 초안은 덮어쓰지 않습니다. 기존 초안이 있으면 자동 녹음 시작을 거부합니다.
+- 상태는 Idle / Recording(권한 요청 포함) / Transcribing / Thinking / Synthesizing / Speaking / Error / Cancelled로 표시합니다.
+- Cancel, 모드 OFF, Lock, 세션 변경, Reset 승인, 관리 화면 이동 또는 페이지 종료 시 후속 단계와 재생을 중단합니다. 녹음 도중 Stop & Send는 전송, Cancel은 녹음 폐기라는 차이가 있습니다.
+- 자동 턴 중 수동 Chat/Record/Play 중복 실행을 막습니다. Lock, Cancel, Reset 확인 및 세션 변경은 계속 사용할 수 있습니다.
+- 음성 턴에만 1~3문장·약 400자 이내 답변을 유도합니다. 500자를 넘으면 전문을 E에 보존하고 TTS만 생략합니다. 답변을 자르거나 자동 분할하지 않습니다.
+- 브라우저가 자동 재생을 거부하면 텍스트와 E의 Play를 유지합니다. 오류를 확인한 뒤 Play를 직접 누르세요.
+
+취소된 Chat은 서버에서 계속 실행되거나 기록에 저장될 수 있습니다. Thinking 중 취소는 응답을 관찰하며 해당 세션의 새 Chat을 차단합니다. Reset을 승인하면 이 Chat의 완료 응답을 기다린 뒤 Reset을 실행합니다.
+
+네트워크 오류·타임아웃·해석 불가능한 응답으로 Chat 완료 여부를 확인할 수 없으면 해당 세션을 차단합니다. 자동 재시도나 자동 Reset은 하지 않으며 시간 경과/Health 성공만으로 풀지 않습니다. 현재 History/상태 확인 API가 없어 UI에서 안전한 재동기화를 확정할 수 없으므로 **새 Session ID를 사용**하세요. 불확실한 세션에는 Reset도 전송하지 않습니다. 진행 중/불확실 세션 ID만 sessionStorage에 보관하여 같은 탭 새로고침에도 보호하며, 대화 전문은 저장하지 않습니다. 저장소 접근이 제한된 브라우저에서는 현재 탭 메모리 안에서만 보호됩니다. 다른 탭/외부 클라이언트까지 이 브라우저 관리자가 제어하지는 않습니다.
+
+### E — Conversation
+
+- 현재 브라우저 세션의 사용자 메시지와 AI 답변을 구분하여 표시합니다.
+- 각 AI 답변의 `Play`를 누르면 `/voice/synthesize`로 로컬 음성을 합성해 재생합니다. 자동 재생은 하지 않습니다.
+- `AI Language`는 다음 Chat 답변과 해당 답변의 TTS 언어를 선택합니다. 한국어가 기본이며 English를 선택한 뒤 새 질문을 보내면 영어 답변을 요청합니다.
+- 기존 답변은 생성 당시 언어로 재생됩니다. 설정을 바꾸는 것만으로 기존 답변이 번역되지는 않습니다.
+- 합성 또는 재생 중에는 버튼이 `Stop`으로 바뀌며, 다른 답변 재생·세션 전환·화면 전환·Lock 시 기존 재생을 정리합니다.
+- 한국어 Piper는 초기 권장값 `length_scale=1.15`를 사용하고, 재생 시작 손실을 줄이기 위해 WAV 앞에 약 250ms PCM 무음을 추가합니다.
+- 서버 정책과 맞춘 Unicode code point 기준 500자 이하 답변만 재생하며 긴 답변을 임의로 자르지 않습니다.
+- 사용자 메시지에는 음성 재생 버튼이 없습니다.
+
+### F — Status / System Log
 
 - 요청 시각, API, Running/Success/Error 상태 표시
-- AI 답변과 전체 응답 시간 표시
-- 입력·생성 토큰 수와 tokens/s 표시
+- 전체 응답 시간, 입력·생성 토큰 수와 tokens/s 표시
+- TTS 합성 언어·소요 시간·WAV 크기와 재생 상태 표시
+- 브라우저 WAV 변환·요청 왕복·Audio 재생 준비 시간과 서버의 STT 디코딩·Whisper·Ollama·Piper 시간을 서로 다른 시계 기준으로 분리 표시
 - Ollama 나노초 지표를 초 단위로 변환
 - 로그 자동 스크롤
-- `Clear`는 브라우저 로그만 삭제하며 서버 대화 문맥은 유지
+- `Clear Log`는 기술 로그만 삭제하며 E의 대화와 서버 대화 문맥은 유지
 
 ## 주요 기능
 
@@ -183,6 +205,10 @@ Flask Controller 및 Ollama 연결 상태를 확인합니다. 모델을 적재�
 Flask는 실행 중이지만 Ollama에 연결할 수 없으면 같은 JSON 구조로 `ollama_reachable: false`와 HTTP 503을 반환합니다.
 
 ### `POST /chat`
+
+선택 필드 `response_language`에 `ko` 또는 `en`을 전달하면 해당 요청의 답변 언어를 지정합니다. 같은 세션의 기존 대화는 유지하며 시스템 언어 지시를 교체합니다. 생략 시 기존 기본값 또는 해당 세션의 이전 언어 지시를 유지합니다. 잘못된 값은 HTTP 400 `invalid_response_language`로 거부합니다. 정상 응답 JSON 구조는 동일합니다.
+
+선택 헤더 `X-Local-AI-Response-Style: voice`는 해당 요청에만 짧은 음성 대화 스타일을 적용합니다. 이 지시는 저장된 시스템 프롬프트나 사용자 질문에 추가되지 않습니다. 헤더 생략/다른 값은 기존 일반 Chat 스타일을 유지합니다. 이 헤더는 인증이나 도구 실행 권한이 아닙니다.
 
 요청:
 
@@ -233,6 +259,26 @@ curl.exe -X POST "http://127.0.0.1:5000/voice/transcribe" `
 ```
 
 음성 파일은 최대 10MiB, 디코딩 후 길이는 최대 30초입니다. WAV, M4A 및 WebM 컨테이너를 지원하며 원본 음성은 영구 저장하지 않습니다. STT는 CPU INT8로 한 번에 하나만 실행하고, 처리 중인 경우 HTTP 429를 반환합니다. `elapsed_seconds`는 Flask가 요청 처리를 시작한 뒤 업로드 읽기, 검증, 디코딩, 필요한 경우 최초 모델 로딩, 추론까지 포함합니다.
+
+### `POST /voice/synthesize`
+
+한국어 또는 영어 텍스트를 로컬 Piper 모델로 합성합니다. 요청은 `application/json`이며 `text`와 `language`(`ko` 또는 `en`)가 필요합니다.
+
+```powershell
+Invoke-WebRequest -Method Post `
+  -Uri "http://127.0.0.1:5000/voice/synthesize" `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"text":"안녕하세요. 로컬 AI가 음성으로 답변합니다.","language":"ko"}' `
+  -OutFile "tts-response.wav"
+```
+
+성공하면 HTTP 200과 `Content-Type: audio/wav`로 22,050Hz·모노·16비트 PCM WAV를 반환합니다. 텍스트는 Python `len()` 기준 최대 500자이며 합성 WAV는 서버 메모리에서 생성됩니다. 언어별 모델은 최초 요청 때 CPU로 로딩하고 이후 재사용합니다. 한 프로세스에서 TTS 추론은 한 번에 하나만 실행하며 처리 중인 요청이 있으면 HTTP 429 `tts_busy`를 반환합니다.
+
+한국어는 `length_scale=1.15`를 초기 권장 속도로 사용하며 영어는 모델 기본 속도 `1.0`을 유지합니다. Piper가 생성한 음성 프레임을 변경하지 않고 WAV 맨 앞에 약 250ms의 0값 PCM 프레임을 추가합니다. JSON 요청과 WAV 응답 계약은 이전 단계와 동일합니다.
+
+성공한 Chat/STT/TTS 응답에는 본문 계약과 별개인 `Server-Timing` 헤더가 추가됩니다. STT는 multipart 읽기·디코딩·모델 로딩·Whisper 추론, Chat은 Ollama 전체 요청, TTS는 Piper 모델 로딩·합성 시간을 제공합니다. `/chat`은 `stream: false`이므로 첫 토큰 시간은 측정할 수 없고 전체 응답 완료 시점만 측정합니다.
+
+오류 응답 코드는 `text_missing`, `text_empty`, `invalid_tts_text`, `text_too_long`, `invalid_tts_language`, `unsupported_media_type`, `tts_busy`, `tts_model_missing`, `tts_initialization_failed`, `tts_inference_failed`입니다.
 
 ### `POST /sessions/<session_id>/reset`
 
@@ -298,6 +344,7 @@ Invoke-RestMethod -Method Post `
 | 활성 RAM 세션 | 최대 60개 |
 | Session ID | Python `len()` 기준 최대 128자 |
 | Message | Python `len()` 기준 최대 10,000자 |
+| TTS Text | Python `len()` 기준 최대 500자 |
 | HTTP 요청 본문 | 최대 1MB |
 | Ollama 생성 요청 제한 시간 | 180초 |
 | 브라우저 요청 제한 시간 | 190초 |
@@ -316,19 +363,42 @@ Invoke-RestMethod -Method Post `
 
 ```powershell
 cd F:\LLM\AI_Project\myLocalAI
-python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 ### Python 문법 검사
 
 ```powershell
-python -m py_compile app.py ai_controller.py ollama_runtime.py
+.\.venv\Scripts\python.exe -m py_compile app.py ai_controller.py ollama_runtime.py voice\stt_service.py voice\tts_service.py
 ```
 
 ### JavaScript 문법 검사
 
 ```powershell
 node --check static/js/main.js
+node --check static/js/voice-turn.js
+node tests/test_voice_turn.js
+node tests/test_voice_ui.js
+```
+
+`test_voice_turn.js`는 실제 단일 턴/세션 보호 관리자의 비동기 상태·경합을 검사합니다. `test_voice_ui.js`는 실제 main.js 이벤트 핸들러를 가짜 DOM/Fetch/MediaRecorder/Audio와 실행하는 테스트입니다. 설치 패키지를 추가하지 않으며 실제 Edge DOM, 마이크 권한, 디코딩과 스피커 재생을 검증한 것으로 간주하지 않습니다.
+
+STEP 6-4-B 수동 Edge 검증 순서:
+
+1. `start_app.bat` 또는 `.\.venv\Scripts\python.exe app.py`로 Flask를 재시작하고 Edge의 `http://127.0.0.1:5000`에서 Ctrl+F5를 누릅니다.
+2. OFF에서 기존 Record→Stop→D Message→Enter→E Play를 확인합니다. 자동 Chat/TTS 요청이 없어야 합니다.
+3. D 초안을 직접 비우고 ON→한국어 프리셋→Record→Stop & Send를 실행합니다. STT→Qwen→Piper→스피커 출력과 E의 질문/답변, F의 단계별 시간을 확인합니다.
+4. 같은 방법으로 영어 프리셋을 선택해 영어 답변과 영어 재생을 확인합니다. 언어 설정은 턴 시작 시 고정되어야 합니다.
+5. Recording/Transcribing/Thinking/Synthesizing/Speaking에서 각각 Cancel·Lock·모드 OFF를 시험합니다. 이후 단계가 새로 호출되지 않고 마이크 표시/오디오가 정리되어야 합니다. Thinking 취소는 서버 기록 롤백이 아닙니다.
+6. 세션 A→B→A 변경과 화면 이동 뒤 늦은 응답이 적용되지 않는지 확인합니다. Thinking 중 Reset 확인 취소는 작업을 유지하고, 승인은 Chat 완료 후 해당 세션 Reset을 실행해야 합니다.
+7. D 초안 보호, 긴 답변의 전문 보존/음성 생략, TTS 오류 후 수동 Play, 재생 거부 안내, 작은 창에서 Cancel/Lock 접근성을 확인합니다.
+
+실제 STEP 6-4-B 마이크/Edge/스피커 전체 흐름은 사용자 실기기 확인이 필요합니다. 자동 검증 결과와 구분해 기록합니다.
+
+한국어 Piper 속도 비교 샘플과 선행 무음 검증 파일은 다음 명령으로 다시 만들 수 있습니다. 출력 위치 `tests\tts_output`은 Git에서 제외됩니다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\tts_quality_probe.py
 ```
 
 Python 단위 테스트는 Ollama 통신과 프로세스 제어를 Mock으로 대체합니다. 실제 모델, GPU, VRAM 또는 `ollama.exe`를 변경하지 않고 API 계약·오류 처리·세션 동시성·입력 경계를 검증합니다.
@@ -336,7 +406,7 @@ Python 단위 테스트는 Ollama 통신과 프로세스 제어를 Mock으로 �
 실제 Ollama 통합 테스트는 별도로 수행해야 합니다.
 
 1. `ollama list`에서 `qwen3.5:9b`를 확인합니다.
-2. `ollama serve`와 `python app.py`를 실행합니다.
+2. `ollama serve`와 `.\.venv\Scripts\python.exe app.py`를 실행합니다.
 3. 브라우저에서 Health Check를 실행합니다.
 4. Chat을 Unlock하고 같은 Session ID로 연속 질문하여 문맥을 확인합니다.
 5. 다른 Session ID가 기존 문맥을 공유하지 않는지 확인합니다.
@@ -382,8 +452,9 @@ Python 단위 테스트는 Ollama 통신과 프로세스 제어를 Mock으로 �
 - **STEP 5-6-3~5 — Session List / History API, 세션 전환, Reset 독립성 검증:** 보류
 - **STEP 6-1 — 음성 AI 환경 분석:** 완료
 - **STEP 6-2 — 로컬 STT:** faster-whisper CPU INT8 기반 Push-to-Talk 음성 인식
-- **STEP 6-3 — 로컬 TTS:** Piper CPU 기반 한국어·영어 음성 합성
+- **STEP 6-3-A~E — 로컬 TTS 환경·독립 합성·Flask API·수동 재생·음질/지연 계측:** 완료
 - **STEP 6-4 — 음성 통합:** STT → 기존 `/chat` → Qwen3.5 9B → TTS
+- **STEP 6-4-A/B — 음성 대화 설계·구현:** 완료 — 기본 OFF, 한 턴 순차 실행·취소·불확실 세션 차단. 실제 Edge 음성 턴 확인 대기
 - **STEP 6-5 — 음성 품질 및 성능 검증:** 인식·합성 품질, 지연시간과 시스템 자원 측정
 - **STEP 7 — SQLite 장기 기억:** 대화 영구 저장 및 세션 복원
 - **STEP 8 — LLM Tool Calling:** allowlist와 입력 검증을 적용한 전문 도구 연동

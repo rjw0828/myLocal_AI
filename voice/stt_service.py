@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,9 @@ class Transcription:
     text: str
     language: str
     audio_seconds: float
+    decode_seconds: float = 0.0
+    model_load_seconds: float = 0.0
+    inference_seconds: float = 0.0
 
 
 def _load_model() -> Any:
@@ -161,9 +165,14 @@ def transcribe_audio(audio_bytes: bytes, language: str = "auto") -> Transcriptio
     if not _inference_lock.acquire(blocking=False):
         raise SttBusyError()
     try:
+        decode_started = time.perf_counter()
         decoded, audio_seconds = _decode_audio(audio_bytes)
+        decode_seconds = time.perf_counter() - decode_started
+        model_started = time.perf_counter()
         model = _load_model()
+        model_load_seconds = time.perf_counter() - model_started
         try:
+            inference_started = time.perf_counter()
             segments, info = model.transcribe(
                 decoded,
                 beam_size=1,
@@ -171,6 +180,7 @@ def transcribe_audio(audio_bytes: bytes, language: str = "auto") -> Transcriptio
                 vad_filter=False,
             )
             text = "".join(segment.text for segment in segments).strip()
+            inference_seconds = time.perf_counter() - inference_started
         except Exception as error:
             raise SttInferenceError() from error
         if not text:
@@ -178,6 +188,13 @@ def transcribe_audio(audio_bytes: bytes, language: str = "auto") -> Transcriptio
         detected = language if language != "auto" else getattr(info, "language", "")
         if detected not in {"ko", "en"}:
             detected = str(detected or "unknown")
-        return Transcription(text=text, language=detected, audio_seconds=audio_seconds)
+        return Transcription(
+            text=text,
+            language=detected,
+            audio_seconds=audio_seconds,
+            decode_seconds=decode_seconds,
+            model_load_seconds=model_load_seconds,
+            inference_seconds=inference_seconds,
+        )
     finally:
         _inference_lock.release()

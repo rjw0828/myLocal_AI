@@ -47,6 +47,8 @@ class SttApiTests(unittest.TestCase):
                 self.assertEqual(response.json["language"], detected)
                 self.assertGreaterEqual(response.json["elapsed_seconds"], 0)
                 self.assertEqual(transcribe.call_args.args[1], language or "auto")
+                for metric in ("upload", "decode", "stt_model", "whisper", "total"):
+                    self.assertIn(f"{metric};dur=", response.headers["Server-Timing"])
 
     @patch("voice.stt_service.transcribe_audio")
     def test_missing_empty_and_invalid_language(self, transcribe) -> None:
@@ -214,6 +216,9 @@ class SttServiceTests(unittest.TestCase):
             result = stt_service.transcribe_audio(b"private audio", "auto")
         self.assertEqual(result.text, "hello")
         self.assertEqual(result.language, "en")
+        self.assertGreaterEqual(result.decode_seconds, 0)
+        self.assertGreaterEqual(result.model_load_seconds, 0)
+        self.assertGreaterEqual(result.inference_seconds, 0)
         temporary_file.assert_not_called()
         model.transcribe.assert_called_once_with(
             [0.0], beam_size=1, language=None, vad_filter=False,

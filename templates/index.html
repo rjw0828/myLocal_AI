@@ -73,6 +73,15 @@
 
       <section class="input-panel panel is-locked" id="input-panel" aria-labelledby="input-title">
         <div class="input-header"><div class="panel-heading compact"><span class="panel-index">D</span><div><h2 id="input-title">Input</h2><p>REQUEST</p></div></div><button class="lock-button" id="console-lock" type="button" aria-pressed="true"><span aria-hidden="true" id="lock-icon">▣</span> <span id="lock-label">Unlock</span></button></div>
+        <div class="voice-mode-controls" aria-label="음성 대화 모드">
+          <button id="voice-mode" type="button" aria-pressed="false">Voice Conversation OFF</button>
+          <select id="voice-preset" aria-label="음성 대화 언어 프리셋" disabled>
+            <option value="custom">Language…</option>
+            <option value="ko">한국어 ko→ko</option>
+            <option value="en">English en→en</option>
+          </select>
+          <button id="cancel-voice-turn" type="button" disabled>Cancel</button>
+        </div>
         <div class="form-stack">
           <label for="session-id">Session ID</label><input id="session-id" name="session_id" value="default" maxlength="128" autocomplete="off" disabled>
           <label for="message">Message</label><textarea id="message" name="message" rows="3" maxlength="10000" placeholder="Unlock 후 메시지를 입력하세요." disabled></textarea>
@@ -94,6 +103,13 @@
       <section class="conversation-panel panel" aria-labelledby="conversation-title">
         <div class="conversation-header">
           <div class="panel-heading compact"><span class="panel-index">E</span><div><h2 id="conversation-title">Conversation</h2><p id="conversation-session">SESSION · default</p></div></div>
+          <label class="tts-language-control" for="tts-language">
+            <span>AI Language</span>
+            <select id="tts-language" aria-label="다음 AI 답변 및 음성 언어" title="다음 답변에 적용됩니다. 기존 답변은 번역되지 않습니다.">
+              <option value="ko" selected>한국어</option>
+              <option value="en">English</option>
+            </select>
+          </label>
         </div>
         <div class="conversation-output" id="conversation-output" role="log" aria-live="polite" aria-label="현재 세션 대화">
           <p class="conversation-empty" id="conversation-empty">Chat을 실행하면 현재 세션의 대화가 여기에 표시됩니다.</p>
@@ -110,6 +126,7 @@
       </section>
     </div>
   </div>
+  <script src="{{ url_for('static', filename='js/voice-turn.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
 </body>
 </html>

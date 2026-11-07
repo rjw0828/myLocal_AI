@@ -21,3 +21,4 @@ venv/
 
 # Private local voice test samples
 tests/audio_samples/
+tests/tts_output/

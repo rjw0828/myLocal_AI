@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import ai_controller
 from app import (MAX_ACTIVE_SESSIONS, MAX_MESSAGE_LENGTH,
-                 MAX_SESSION_ID_LENGTH, create_app)
+                 MAX_SESSION_ID_LENGTH, RESPONSE_LANGUAGE_PROMPTS, create_app)
 
 
 def chat_result() -> dict:
@@ -114,7 +114,7 @@ class AppTests(unittest.TestCase):
             script = response.get_data(as_text=True)
             self.assertIn("const conversations = new Map()", script)
             self.assertIn("appendConversation(sessionId, \"user\", message)", script)
-            self.assertIn("appendConversation(sessionId, \"assistant\", result.message)", script)
+            self.assertIn("appendConversation(sessionId, \"assistant\", result.message, responseLanguage)", script)
             self.assertIn("conversationSession.textContent", script)
             self.assertIn("text.textContent = content", script)
             self.assertIn("conversations.delete(sessionId)", script)
@@ -210,6 +210,78 @@ class AppTests(unittest.TestCase):
         finally:
             response.close()
 
+    def test_tts_markup_has_korean_default_and_preserves_conversation_layout(self) -> None:
+        page = self.client.get("/").get_data(as_text=True)
+        for value in ('id="tts-language"', '<option value="ko" selected>한국어</option>',
+                      '<option value="en">English</option>', 'id="conversation-output"',
+                      'class="session-list-placeholder"', 'id="output-log"'):
+            self.assertIn(value, page)
+
+        response = self.client.get("/static/css/style.css")
+        try:
+            css = response.get_data(as_text=True)
+            for value in (".tts-language-control {", ".tts-play-button {",
+                          ".tts-message-status {", ".conversation-message-actions {"):
+                self.assertIn(value, css)
+        finally:
+            response.close()
+
+    def test_tts_controls_are_created_for_assistant_messages_only(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            assistant_section = script[script.index('if (role === "assistant")'):script.index("conversationOutput.append(entry)")]
+            self.assertIn('playButton.className = "tts-play-button"', assistant_section)
+            self.assertIn('playButton.dataset.messageId = String(id)', assistant_section)
+            self.assertIn("actions.append(playButton, playStatus)", assistant_section)
+            self.assertIn('label.textContent = role === "user" ? "YOU" : "AI"', script)
+            self.assertNotIn("innerHTML", script)
+        finally:
+            response.close()
+
+    def test_tts_is_manual_language_aware_and_enforces_unicode_limit(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for value in ('window.fetch("/voice/synthesize"',
+                          'JSON.stringify({ text, language })',
+                          "const language = message.language || ttsLanguage.value",
+                          "const ttsTextLength = (text) => Array.from(text).length",
+                          "TTS_MAX_CODE_POINTS = 500",
+                          "playButton.disabled = true"):
+                self.assertIn(value, script)
+            self.assertEqual(script.count("startTts(button, status, message)"), 1)
+        finally:
+            response.close()
+
+    def test_tts_playback_cancellation_and_resources_are_cleaned(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for value in ("new AbortController()", "ttsController.abort()", "ttsAudio.pause()",
+                          "URL.createObjectURL(blob)", "URL.revokeObjectURL(ttsObjectUrl)",
+                          "ttsAudio.onended", "ttsAudio.onerror", "ttsGeneration",
+                          'window.addEventListener("beforeunload"'):
+                self.assertIn(value, script)
+            self.assertIn('button.textContent = state === "idle" ? "▶ Play" : "■ Stop"', script)
+        finally:
+            response.close()
+
+    def test_tts_session_transitions_errors_and_wav_validation_are_handled(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for value in ("Session changed. Previous TTS playback was stopped.",
+                          "Session reset. TTS playback was stopped.",
+                          "Input was locked. TTS playback was stopped.",
+                          'contentType.toLowerCase().startsWith("audio/wav")',
+                          'ascii.startsWith("RIFF")', 'ascii.slice(8, 12) !== "WAVE"',
+                          'error.code === "tts_cancelled"', "response.status",
+                          "apiError.code"):
+                self.assertIn(value, script)
+        finally:
+            response.close()
+
     def test_tool_console_script_covers_safety_and_api_contracts(self) -> None:
         response = self.client.get("/static/js/main.js")
         try:
@@ -270,6 +342,13 @@ class AppTests(unittest.TestCase):
                           "prompt_eval_duration", "eval_duration"):
                 self.assertIn(field, script)
             self.assertIn("value / 1_000_000_000", script)
+            for value in ("parseServerTiming", "Recording stop → WAV ready",
+                          "Flask multipart parse/read", "Whisper inference",
+                          "Qwen request → complete response",
+                          "Qwen first token: unavailable",
+                          "Piper model load", "Piper synthesis",
+                          "WAV received → Audio.play()"):
+                self.assertIn(value, script)
         finally:
             response.close()
 
@@ -300,10 +379,68 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.json["metrics"]["tokens_per_second"], 10)
         self.assertEqual(response.json["metrics"]["prompt_eval_count"], 5)
         self.assertGreaterEqual(response.json["elapsed_seconds"], 0)
+        self.assertIn("ollama;dur=", response.headers["Server-Timing"])
+        self.assertIn("total;dur=", response.headers["Server-Timing"])
 
     def test_missing_metrics(self) -> None:
         self.ask.return_value = {"message": {"role": "assistant", "content": "ok"}}
         self.assertEqual(self.chat().json["metrics"], {"tokens_per_second": None})
+
+    def test_response_language_switch_preserves_history_and_replaces_prompt(self) -> None:
+        self.chat("language-session", "first")
+        for language in ("en", "ko", "en"):
+            response = self.client.post("/chat", json={
+                "session_id": "language-session", "message": "next",
+                "response_language": language,
+            })
+            self.assertEqual(response.status_code, 200)
+            messages = self.ask.call_args.args[0]
+            self.assertEqual(sum(item["role"] == "system" for item in messages), 1)
+            self.assertEqual(messages[0]["content"], RESPONSE_LANGUAGE_PROMPTS[language])
+            self.assertEqual(messages[1], {"role": "user", "content": "first"})
+        self.assertEqual(len(messages), 8)
+
+    def test_invalid_response_language_is_rejected_before_model_call(self) -> None:
+        for language in (None, "auto", "fr", 1, [], {}):
+            with self.subTest(language=language):
+                response = self.client.post("/chat", json={
+                    "session_id": "a", "message": "hello", "response_language": language,
+                })
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json["error"]["code"], "invalid_response_language")
+        self.ask.assert_not_called()
+
+    def test_failed_language_switch_does_not_change_stored_history(self) -> None:
+        self.chat("a", "first")
+        with patch("ai_controller.ask_ollama", side_effect=TimeoutError()):
+            response = self.client.post("/chat", json={
+                "session_id": "a", "message": "next", "response_language": "en",
+            })
+        self.assertEqual(response.status_code, 504)
+        self.chat("a", "retry")
+        messages = self.ask.call_args.args[0]
+        self.assertEqual(messages[0]["content"], ai_controller.SYSTEM_PROMPT)
+        self.assertEqual(len(messages), 4)
+
+    def test_voice_response_style_is_request_only_and_preserves_contract(self) -> None:
+        response = self.client.post("/chat", json={
+            "session_id": "voice", "message": "hello", "response_language": "en",
+        }, headers={"X-Local-AI-Response-Style": "voice"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.json), {"session_id", "model", "message", "elapsed_seconds", "metrics"})
+        messages = self.ask.call_args.args[0]
+        self.assertIn("400 Unicode characters", messages[0]["content"])
+        self.assertEqual(messages[-1], {"role": "user", "content": "hello"})
+        self.chat("voice", "follow up")
+        stored = self.ask.call_args.args[0]
+        self.assertEqual(stored[0]["content"], RESPONSE_LANGUAGE_PROMPTS["en"])
+        self.assertNotIn("400 Unicode characters", str(stored))
+        self.assertEqual(len(stored), 4)
+
+    def test_unknown_voice_style_header_does_not_change_normal_chat(self) -> None:
+        self.client.post("/chat", json={"session_id": "a", "message": "hello"},
+                         headers={"X-Local-AI-Response-Style": "anything"})
+        self.assertEqual(self.ask.call_args.args[0][0]["content"], ai_controller.SYSTEM_PROMPT)
 
     def test_zero_duration(self) -> None:
         self.ask.return_value["eval_duration"] = 0
