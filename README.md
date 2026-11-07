@@ -31,6 +31,15 @@ cd F:\LLM\AI_Project\myLocalAI
 python -m pip install Flask==3.1.2
 ```
 
+로컬 음성 인식을 사용할 때는 프로젝트 가상환경에서 Flask와 faster-whisper를 함께 실행합니다.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install faster-whisper==1.2.1 Flask==3.1.2 Werkzeug==3.1.5 Jinja2==3.1.6 itsdangerous==2.2.0 blinker==1.9.0 MarkupSafe==3.0.3
+```
+
+STT 모델은 `F:\LLM\Models\speech\whisper\faster-whisper-small`에 별도로 준비하며 Git에 추가하지 않습니다.
+
 설치된 모델을 확인합니다.
 
 ```powershell
@@ -74,7 +83,7 @@ ollama ps
 
 ```powershell
 cd F:\LLM\AI_Project\myLocalAI
-python app.py
+.\.venv\Scripts\python.exe app.py
 ```
 
 브라우저에서 다음 주소를 엽니다.
@@ -115,6 +124,11 @@ Ollama 서버 종료는 Web UI의 상태 버튼 또는 Windows 프로세스 종�
 - `Shift+Enter`는 줄바꿈입니다.
 - Health와 Reset은 Locked 상태에서도 실행할 수 있습니다.
 - 잠금은 오조작 방지 기능이며 인증이나 접근 제어가 아닙니다.
+- Unlock 후 `Record`를 누르면 Push-to-Talk 녹음을 시작하고 `Stop`을 누르면 로컬 STT를 실행합니다.
+- 언어는 Auto, 한국어, English 중 선택하며 최대 녹음 시간은 30초입니다.
+- 인식된 문장은 Message에만 반영되며 Chat으로 자동 전송되지 않습니다.
+- 기존 Message가 있으면 확인 후 교체하며, 녹음 중 Session ID가 바뀌면 결과를 적용하지 않습니다.
+- 브라우저 마이크 권한이 필요하며 음성 원본은 브라우저 메모리와 STT 요청 처리 중에만 유지됩니다.
 
 ### E — Status / Output
 
@@ -197,6 +211,28 @@ Flask는 실행 중이지만 Ollama에 연결할 수 없으면 같은 JSON 구�
 ```
 
 메트릭은 Ollama가 제공한 필드만 포함되며 `tokens_per_second`를 계산할 수 없으면 `null`입니다.
+
+### `POST /voice/transcribe`
+
+로컬 음성 파일을 텍스트로 변환합니다. `multipart/form-data`로 `audio` 파일과 선택적인 `language` 값(`auto`, `ko`, `en`)을 전송합니다. 기본 언어는 `auto`입니다.
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:5000/voice/transcribe" `
+  -F "audio=@tests/audio_samples/ko.m4a" `
+  -F "language=auto"
+```
+
+정상 응답, HTTP 200:
+
+```json
+{
+  "text": "안녕하세요. 로컬 AI 음성 인식 테스트입니다.",
+  "language": "ko",
+  "elapsed_seconds": 4.8
+}
+```
+
+음성 파일은 최대 10MiB, 디코딩 후 길이는 최대 30초입니다. WAV, M4A 및 WebM 컨테이너를 지원하며 원본 음성은 영구 저장하지 않습니다. STT는 CPU INT8로 한 번에 하나만 실행하고, 처리 중인 경우 HTTP 429를 반환합니다. `elapsed_seconds`는 Flask가 요청 처리를 시작한 뒤 업로드 읽기, 검증, 디코딩, 필요한 경우 최초 모델 로딩, 추론까지 포함합니다.
 
 ### `POST /sessions/<session_id>/reset`
 
@@ -342,12 +378,20 @@ Python 단위 테스트는 Ollama 통신과 프로세스 제어를 Mock으로 �
 
 ## 로드맵
 
-- **STEP 6:** SQLite 기반 대화 영구 저장
-- **STEP 7:** allowlist와 입력 검증을 적용한 LLM Tool Calling
-- **STEP 8:** 로컬 STT/TTS 기반 음성 AI
+- **STEP 5-6-2 — E/F 패널 분리:** 완료
+- **STEP 5-6-3~5 — Session List / History API, 세션 전환, Reset 독립성 검증:** 보류
+- **STEP 6-1 — 음성 AI 환경 분석:** 완료
+- **STEP 6-2 — 로컬 STT:** faster-whisper CPU INT8 기반 Push-to-Talk 음성 인식
+- **STEP 6-3 — 로컬 TTS:** Piper CPU 기반 한국어·영어 음성 합성
+- **STEP 6-4 — 음성 통합:** STT → 기존 `/chat` → Qwen3.5 9B → TTS
+- **STEP 6-5 — 음성 품질 및 성능 검증:** 인식·합성 품질, 지연시간과 시스템 자원 측정
+- **STEP 7 — SQLite 장기 기억:** 대화 영구 저장 및 세션 복원
+- **STEP 8 — LLM Tool Calling:** allowlist와 입력 검증을 적용한 전문 도구 연동
 - **이후:** 장기 기억 검색, 대화 요약, 페르소나, Bluetooth·게임패드·휴대전화 등 주변기기 연동
 
-STEP 6을 시작하기 전에 ISSUE-001의 실제 세션 초기화 범위를 복수 Session ID와 실제 브라우저 환경에서 반드시 재검증해야 합니다. SQLite에 잘못된 Reset 의미를 영구 저장 구조로 옮기지 않는 것이 중요합니다.
+개발 순서를 변경한 이유는 SQLite 장기 기억보다 로컬 음성 대화의 기본 동작을 먼저 검증하기 위해서입니다. 기존 Flask 및 Qwen3.5 9B 구조를 재사용하고 STT/TTS는 독립 모듈로 구성합니다. 추가 비용 0원과 로컬 실행 원칙을 유지하며, 음성 기능이 실패해도 기존 텍스트 Chat은 정상 동작해야 합니다.
+
+ISSUE-001의 실제 세션 초기화 범위는 SQLite 영구 저장을 구현하기 전에 복수 Session ID와 실제 브라우저 환경에서 반드시 재검증해야 합니다. ISSUE-002의 Qwen 문맥 해석 부정확 문제는 별도 품질 개선 항목으로 유지합니다.
 
 ## v0.1 상태
 

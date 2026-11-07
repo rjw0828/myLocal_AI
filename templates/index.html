@@ -77,6 +77,17 @@
           <label for="session-id">Session ID</label><input id="session-id" name="session_id" value="default" maxlength="128" autocomplete="off" disabled>
           <label for="message">Message</label><textarea id="message" name="message" rows="3" maxlength="10000" placeholder="Unlock 후 메시지를 입력하세요." disabled></textarea>
         </div>
+        <div class="voice-controls" aria-label="로컬 음성 입력">
+          <label for="stt-language">Voice</label>
+          <select id="stt-language" disabled>
+            <option value="auto" selected>Auto</option>
+            <option value="ko">한국어</option>
+            <option value="en">English</option>
+          </select>
+          <button class="record-button" id="record-voice" type="button" aria-pressed="false" disabled>Record</button>
+          <span class="voice-timer" id="voice-timer" aria-label="녹음 시간">00:00</span>
+        </div>
+        <p class="voice-status" id="voice-status" role="status" aria-live="polite" data-state="idle">Idle · 녹음 내용은 STT 후 자동 전송되지 않습니다.</p>
         <p class="lock-note" id="lock-note">입력 보호가 활성화되어 있습니다. Health와 Reset은 실행할 수 있습니다.</p>
       </section>
 

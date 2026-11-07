@@ -59,7 +59,7 @@ class AppTests(unittest.TestCase):
             css = response.get_data(as_text=True)
             self.assertIn("height: calc(100vh - 28px)", css)
             self.assertIn("grid-template-rows: 64px minmax(0, 1fr)", css)
-            self.assertIn("clamp(210px, 20vh, 240px)", css)
+            self.assertIn("clamp(230px, 24vh, 280px)", css)
         finally:
             response.close()
 
@@ -134,6 +134,79 @@ class AppTests(unittest.TestCase):
                 'clearOutputButton.addEventListener("click", () => { conversationOutput',
                 script,
             )
+        finally:
+            response.close()
+
+    def test_voice_input_markup_preserves_locked_default(self) -> None:
+        page = self.client.get("/").get_data(as_text=True)
+        for value in ('id="record-voice"', 'id="stt-language"',
+                      'id="voice-status"', 'id="voice-timer"',
+                      '<option value="auto" selected>Auto</option>',
+                      '<option value="ko">한국어</option>',
+                      '<option value="en">English</option>'):
+            self.assertIn(value, page)
+        self.assertIn('id="record-voice" type="button" aria-pressed="false" disabled', page)
+        self.assertIn('id="stt-language" disabled', page)
+
+    def test_voice_script_uses_browser_recording_contract(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for value in (
+                    "navigator.mediaDevices.getUserMedia", "window.MediaRecorder",
+                    "MediaRecorder.isTypeSupported", '"audio/webm;codecs=opus"',
+                    '"audio/webm"', "VOICE_MAX_MS = 30_000",
+                    "VOICE_MAX_BYTES = 10 * 1024 * 1024", 'formData.append("audio"',
+                    'formData.append("language"', 'requestJson("/voice/transcribe"'):
+                self.assertIn(value, script)
+            self.assertIn("mediaRecorder.start();", script)
+            self.assertNotIn("mediaRecorder.start(250)", script)
+            self.assertIn("window.AudioContext || window.webkitAudioContext", script)
+            self.assertIn('return new Blob([wav], { type: "audio/wav" })', script)
+            self.assertIn('formData.append("audio", uploadBlob, "recording.wav")', script)
+            self.assertIn("Browser WAV ready", script)
+        finally:
+            response.close()
+
+    def test_voice_script_protects_state_sessions_and_existing_text(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for state in ('"requesting"', '"recording"', '"transcribing"', '"error"'):
+                self.assertIn(state, script)
+            self.assertIn("sessionInput.value.trim() !== sessionId", script)
+            self.assertIn("currentMessage !== initialMessage", script)
+            self.assertIn("window.confirm", script)
+            self.assertIn("messageInput.value = text", script)
+            upload_section = script[script.index("const uploadRecording"):script.index("const finishRecording")]
+            self.assertNotIn('requestJson("/chat"', upload_section)
+            self.assertNotIn("runSelectedTool", upload_section)
+        finally:
+            response.close()
+
+    def test_voice_script_cleans_tracks_and_blocks_duplicate_actions(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            self.assertIn("mediaStream.getTracks().forEach((track) => track.stop())", script)
+            self.assertIn('track.addEventListener("ended"', script)
+            self.assertIn('window.addEventListener("beforeunload"', script)
+            self.assertIn("requestRunning || voiceBusy", script)
+            self.assertIn("requestRunning || isVoiceBusy()", script)
+            self.assertIn('["requesting", "recording"].includes(voiceState)', script)
+        finally:
+            response.close()
+
+    def test_voice_controls_keep_responsive_layout(self) -> None:
+        response = self.client.get("/static/css/style.css")
+        try:
+            css = response.get_data(as_text=True)
+            self.assertIn(".voice-controls {", css)
+            self.assertIn('.voice-status[data-state="recording"]', css)
+            self.assertIn('.voice-status[data-state="transcribing"]', css)
+            self.assertIn(".voice-controls { grid-template-columns: 1fr auto auto; }", css)
+            self.assertIn("clamp(230px, 24vh, 280px)", css)
+            self.assertIn(".tool-panel, .input-panel { padding: 12px; overflow: hidden; }", css)
         finally:
             response.close()
 

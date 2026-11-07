@@ -15,6 +15,7 @@ from werkzeug.exceptions import HTTPException
 
 import ai_controller
 import ollama_runtime
+from voice import stt_service
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -22,6 +23,9 @@ MAX_CONTENT_LENGTH = 1024 * 1024
 MAX_SESSION_ID_LENGTH = 128
 MAX_MESSAGE_LENGTH = 10_000
 MAX_ACTIVE_SESSIONS = 60
+MAX_STT_AUDIO_BYTES = 10 * 1024 * 1024
+# Multipart boundaries and headers sit outside the audio field itself.
+MAX_STT_REQUEST_LENGTH = MAX_STT_AUDIO_BYTES + 64 * 1024
 METRIC_FIELDS = (
     "total_duration", "load_duration", "prompt_eval_count",
     "prompt_eval_duration", "eval_count", "eval_duration",
@@ -49,6 +53,16 @@ def create_app() -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     sessions: dict[str, Session] = {}
     sessions_lock = Lock()
+
+    @app.before_request
+    def apply_endpoint_upload_limit() -> None:
+        if request.path == "/voice/transcribe":
+            request.max_content_length = MAX_STT_REQUEST_LENGTH
+
+    @app.teardown_request
+    def close_voice_upload(_error: BaseException | None) -> None:
+        if request.path == "/voice/transcribe":
+            request.close()
 
     def acquire_session(session_id: str, create: bool = True) -> tuple[Session | None, bool]:
         with sessions_lock:
@@ -177,6 +191,63 @@ def create_app() -> Flask:
             session_id=session_id, model=ai_controller.MODEL,
             message=answer["content"], elapsed_seconds=time.perf_counter() - started,
             metrics=metrics,
+        ), 200
+
+    @app.post("/voice/transcribe")
+    def transcribe_voice() -> tuple[Response, int]:
+        started = time.perf_counter()
+        language = request.form.get("language", "auto")
+        if language not in stt_service.ALLOWED_LANGUAGES:
+            return error_response(
+                "invalid_stt_language", "language must be one of: auto, ko, en.", 400,
+            )
+        audio = request.files.get("audio")
+        if audio is None:
+            return error_response("audio_missing", "The audio field is required.", 400)
+        try:
+            audio_bytes = audio.stream.read(MAX_STT_AUDIO_BYTES + 1)
+        finally:
+            audio.close()
+        if not audio_bytes:
+            return error_response("audio_empty", "The audio file is empty.", 400)
+        if len(audio_bytes) > MAX_STT_AUDIO_BYTES:
+            return error_response(
+                "audio_too_large", "The audio file must not exceed 10 MiB.", 413,
+            )
+        try:
+            result = stt_service.transcribe_audio(audio_bytes, language)
+        except stt_service.SttBusyError:
+            return error_response(
+                "stt_busy", "Another speech recognition request is running.", 429,
+            )
+        except stt_service.SttAudioTooLongError:
+            return error_response(
+                "audio_too_long", "Decoded audio must not exceed 30 seconds.", 413,
+            )
+        except stt_service.SttAudioError:
+            return error_response(
+                "invalid_audio", "Audio must be a valid WAV, M4A, or WebM file.", 415,
+            )
+        except stt_service.SttModelMissingError:
+            return error_response(
+                "stt_model_missing", "The local speech model is unavailable.", 503,
+            )
+        except stt_service.SttInitializationError:
+            return error_response(
+                "stt_initialization_failed", "Speech recognition could not initialize.", 503,
+            )
+        except stt_service.SttInferenceError:
+            return error_response(
+                "stt_inference_failed", "Speech recognition failed.", 500,
+            )
+        except stt_service.SttEmptyResultError:
+            return error_response(
+                "stt_empty_result", "No speech could be recognized.", 422,
+            )
+        return jsonify(
+            text=result.text,
+            language=result.language,
+            elapsed_seconds=time.perf_counter() - started,
         ), 200
 
     @app.post("/sessions/<session_id>/reset")
