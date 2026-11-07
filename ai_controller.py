@@ -3,13 +3,24 @@ import json
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/chat"
 MODEL = "qwen3.5:9b"
+REQUEST_TIMEOUT = 180
 SYSTEM_PROMPT = "너는 개인용 로컬 AI 도우미다. 질문에 한국어로 명확하고 간결하게 답한다."
 
 
-def ask_ollama(messages):
+def check_ollama() -> None:
+    """Check connectivity without loading a model or generating tokens."""
+    with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/version", timeout=3) as response:
+        result = json.load(response)
+    if not isinstance(result, dict) or not isinstance(result.get("version"), str):
+        raise ValueError("Invalid Ollama version response")
+
+
+def ask_ollama(messages: list[dict[str, str]]) -> dict[str, Any]:
     payload = json.dumps({
         "model": MODEL,
         "messages": messages,
@@ -22,11 +33,11 @@ def ask_ollama(messages):
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
         return json.load(response)
 
 
-def main():
+def main() -> None:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     print(f"Local AI Lab | Model: {MODEL}")
     print("Commands: /exit (quit), /clear (reset chat)\n")

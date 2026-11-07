@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local AI Lab의 Ollama 및 Flask Controller 관리 콘솔">
+  <title>Local AI Control Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="console-shell">
+    <header class="topbar panel">
+      <button class="brand" id="guide-button" type="button" aria-label="사용 설명서로 이동"><span class="brand-mark" aria-hidden="true">LA</span><span>Local AI Lab</span></button>
+      <div class="page-title"><strong>Local AI Control Console</strong><span>Local-first Ollama workspace</span></div>
+    </header>
+
+    <div class="workspace">
+      <nav class="navigation panel" aria-label="주 메뉴">
+        <div class="panel-heading"><span class="panel-index">B</span><div><h2>Navigation</h2><p>WORKSPACE</p></div></div>
+        <button class="nav-item" id="server-button" type="button" aria-controls="main-content"><span class="nav-icon" aria-hidden="true">●</span><span>AI Serve Locals</span></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon" aria-hidden="true">○</span><span>Reserved 1</span></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon" aria-hidden="true">○</span><span>Reserved 2</span></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon" aria-hidden="true">○</span><span>Reserved 3</span></button>
+      </nav>
+
+      <main class="main-panel panel" id="main-content" tabindex="-1">
+        <section id="guide-view" aria-labelledby="guide-title">
+          <div class="eyebrow">A · Main Content</div>
+          <div class="hero-copy">
+            <p class="kicker">WELCOME TO YOUR LOCAL WORKSPACE</p>
+            <h1 id="guide-title">Ollama와 Local AI Lab 시작하기</h1>
+            <p>이 콘솔은 내 PC에서 동작하는 Ollama 모델과 Flask Controller를 이해하고 점검하기 위한 로컬 전용 인터페이스입니다.</p>
+          </div>
+          <div class="guide-grid">
+            <article class="guide-card accent-card"><span class="card-number">01</span><h2>두 서버의 역할</h2><p><strong>Flask Controller</strong>는 브라우저 요청, 세션, 오류 형식을 관리합니다. <strong>Ollama</strong>는 실제 모델을 적재하고 AI 응답을 생성합니다.</p></article>
+            <article class="guide-card"><span class="card-number">02</span><h2>콘솔 실행</h2><p>PowerShell에서 프로젝트 폴더로 이동한 뒤 아래 명령을 실행합니다.</p><code>python app.py</code><p class="hint">브라우저: http://127.0.0.1:5000</p></article>
+            <article class="guide-card commands-card">
+              <span class="card-number">03</span><h2>Ollama 주요 명령어</h2>
+              <dl class="command-list">
+                <div><dt><code>ollama list</code></dt><dd>설치 모델 확인</dd></div><div><dt><code>ollama ps</code></dt><dd>현재 적재 모델 확인</dd></div>
+                <div><dt><code>ollama run qwen3.5:9b</code></dt><dd>모델 실행</dd></div><div><dt><code>ollama stop qwen3.5:9b</code></dt><dd>모델 적재 해제</dd></div>
+                <div><dt><code>ollama serve</code></dt><dd>Ollama 서버 시작</dd></div>
+              </dl>
+            </article>
+            <article class="guide-card"><span class="card-number">04</span><h2>Thinking과 GPU 표시</h2><p>현재 Controller는 <strong>Thinking OFF</strong>로 고정되어 있습니다. ON/OFF 옵션은 후속 단계에서 제어할 수 있습니다.</p><p><code>ollama ps</code>의 <strong>100% GPU</strong>는 모델이 GPU에 전부 배치됐다는 뜻이며, GPU가 항상 100% 사용 중이라는 의미는 아닙니다.</p></article>
+            <article class="guide-card console-guide"><span class="card-number">05</span><h2>테스트 콘솔 사용법</h2><ol><li><strong>C</strong>에서 Health, Chat, Reset 작업을 선택합니다.</li><li><strong>D</strong>를 Unlock한 뒤 세션과 메시지를 입력합니다.</li><li><strong>E</strong>에서 요청 상태와 응답 성능을 확인합니다.</li></ol><p class="hint">이번 단계에서는 화면과 잠금 동작만 제공됩니다. API 연결은 다음 단계에서 추가됩니다.</p></article>
+          </div>
+        </section>
+
+        <section id="server-view" class="server-view" aria-labelledby="server-title" hidden>
+          <div class="eyebrow">A · Local Server Management</div>
+          <div class="section-title-row"><div><p class="kicker">LOCAL RUNTIME</p><h1 id="server-title">AI Serve Locals</h1><p>등록된 로컬 AI 서버의 구성과 상태를 확인하는 화면입니다.</p></div><button class="secondary-button" type="button" disabled title="STEP 3에서 연결됩니다">상태 새로고침</button></div>
+          <div class="status-cards">
+            <article class="status-card"><span>Flask Controller</span><strong>연결 대기</strong><small>127.0.0.1:5000</small></article>
+            <article class="status-card"><span>Ollama</span><strong>확인 전</strong><small>127.0.0.1:11434</small></article>
+            <article class="status-card"><span>Configured Model</span><strong>qwen3.5:9b</strong><small>Thinking OFF</small></article>
+          </div>
+          <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태</th></tr></thead><tbody><tr><td>Local Ollama</td><td>127.0.0.1:11434</td><td>qwen3.5:9b</td><td><span class="status-pill">확인 전</span></td></tr></tbody></table></div>
+          <p class="notice">서버 프로세스 시작·중지 기능은 제공하지 않습니다. 실제 상태 조회는 STEP 3에서 연결됩니다.</p>
+        </section>
+      </main>
+    </div>
+
+    <div class="tool-console">
+      <section class="tool-panel panel" aria-labelledby="tools-title">
+        <div class="panel-heading compact"><span class="panel-index">C</span><div><h2 id="tools-title">Tool Calling</h2><p>API TEST</p></div></div>
+        <div class="tool-buttons"><button type="button" disabled><span>Health Check</span><small>GET /health</small></button><button type="button" disabled><span>Chat</span><small>POST /chat</small></button><button type="button" disabled><span>Reset Session</span><small>POST /reset</small></button></div>
+      </section>
+
+      <section class="input-panel panel is-locked" id="input-panel" aria-labelledby="input-title">
+        <div class="input-header"><div class="panel-heading compact"><span class="panel-index">D</span><div><h2 id="input-title">Input</h2><p>REQUEST</p></div></div><button class="lock-button" id="console-lock" type="button" aria-pressed="true"><span aria-hidden="true" id="lock-icon">▣</span> <span id="lock-label">Unlock</span></button></div>
+        <div class="form-stack"><label for="session-id">Session ID</label><input id="session-id" name="session_id" value="default" autocomplete="off" disabled><label for="message">Message</label><textarea id="message" name="message" rows="3" placeholder="Unlock 후 메시지를 입력하세요." disabled></textarea></div>
+        <p class="lock-note" id="lock-note">입력 보호가 활성화되어 있습니다.</p>
+      </section>
+
+      <section class="output-panel panel" aria-labelledby="output-title">
+        <div class="output-header"><div class="panel-heading compact inverse"><span class="panel-index">E</span><div><h2 id="output-title">Status / Output</h2><p>READ ONLY</p></div></div><button type="button" disabled>Clear</button></div>
+        <div class="terminal" role="log" aria-live="polite" aria-label="API 실행 로그"><p><span class="log-time">SYSTEM</span> <span class="log-ready">[READY]</span> Local controller UI initialized.</p><p><span class="log-time">SYSTEM</span> <span class="log-info">[INFO]</span> API integration will be enabled in the next step.</p><span class="terminal-cursor" aria-hidden="true"></span></div>
+      </section>
+    </div>
+  </div>
+  <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+</body>
+</html>
