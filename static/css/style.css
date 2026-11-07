@@ -81,7 +81,9 @@ table { width: 100%; border-collapse: collapse; font-size: .83rem; }
 caption { padding-bottom: 10px; text-align: left; font-weight: 750; }
 th, td { padding: 13px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
-.status-pill { display: inline-flex; padding: 4px 8px; border-radius: 99px; background: #e9eeea; color: var(--muted); font-size: .7rem; }
+.status-pill { display: inline-flex; padding: 5px 9px; border: 1px solid transparent; border-radius: 99px; background: #e9eeea; color: var(--muted); font-size: .7rem; cursor: pointer; }
+.status-pill:hover:not(:disabled), .status-pill:focus-visible:not(:disabled) { border-color: currentColor; }
+.status-pill:disabled { cursor: wait; }
 .status-pill.is-online { background: #e1f4e9; color: var(--accent-dark); }
 .status-pill.is-offline { background: #f9e8e8; color: #a43838; }
 .notice { margin-top: 22px; color: var(--muted); font-size: .78rem; }
@@ -89,8 +91,10 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
 .tool-console { min-height: 0; display: grid; grid-template-columns: 17fr 27fr 56fr; gap: 10px; }
 .tool-panel, .input-panel { padding: 14px; overflow: auto; }
 .tool-buttons { display: grid; gap: 7px; }
-.tool-buttons button { min-height: 42px; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); text-align: left; }
-.tool-buttons button:disabled { color: var(--ink); opacity: .7; }
+.tool-buttons button { min-height: 38px; padding: 6px 9px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); text-align: left; cursor: pointer; }
+.tool-buttons button:hover, .tool-buttons button:focus-visible { border-color: #9ac8ad; }
+.tool-buttons button.is-selected { border-color: var(--accent); background: var(--accent-pale); color: var(--accent-dark); box-shadow: inset 3px 0 var(--accent); }
+.tool-buttons button:disabled { color: #7c8780; opacity: .7; cursor: wait; }
 .tool-buttons small { color: var(--muted); font-family: Consolas, monospace; font-size: .62rem; }
 .input-header, .output-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .lock-button, .output-header > button { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; font-size: .72rem; }
@@ -107,12 +111,14 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
 .output-header { padding: 14px 14px 4px; }
 .panel-heading.inverse h2 { color: #f4faf6; }
 .panel-heading.inverse p { color: #77988d; }
-.output-header > button { border-color: #385048; background: #1b2b27; color: #78958c; cursor: not-allowed; }
+.output-header > button { border-color: #385048; background: #1b2b27; color: #b7c9c2; cursor: pointer; }
+.output-header > button:hover, .output-header > button:focus-visible { border-color: #68e29f; color: #68e29f; }
 .terminal { flex: 1; min-height: 0; padding: 8px 16px 16px; overflow: auto; font: .75rem/1.65 Consolas, "Cascadia Mono", monospace; }
-.terminal p { margin: 0; overflow-wrap: anywhere; }
-.log-time { color: #68827a; } .log-ready { color: #68e29f; } .log-info { color: #75c7e8; }
-.terminal-cursor { display: inline-block; width: 7px; height: 13px; margin-top: 8px; background: #68e29f; animation: cursor 1.15s steps(1) infinite; }
-@keyframes cursor { 50% { opacity: 0; } }
+.log-entry { margin: 0 0 9px; padding: 0 0 9px; border-bottom: 1px solid rgba(104, 130, 122, .18); overflow-wrap: anywhere; white-space: pre-wrap; }
+.log-entry:last-child { margin-bottom: 0; }
+.log-head { display: flex; flex-wrap: wrap; gap: 7px; }
+.log-time { color: #68827a; } .log-ready, .log-success { color: #68e29f; } .log-info { color: #75c7e8; } .log-running { color: #e9cf72; } .log-error { color: #ff8d8d; }
+.log-body { margin-top: 3px; color: #d9e5e0; }
 
 @media (max-width: 900px) {
   .console-shell { width: min(100% - 16px, 760px); height: auto; min-height: calc(100vh - 16px); margin: 8px auto; grid-template-rows: auto auto auto; }

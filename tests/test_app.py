@@ -62,13 +62,11 @@ class AppTests(unittest.TestCase):
         finally:
             response.close()
 
-    def test_server_status_ui_uses_health_only(self) -> None:
+    def test_server_status_ui_keeps_health_integration(self) -> None:
         response = self.client.get("/static/js/main.js")
         try:
             script = response.get_data(as_text=True)
-            self.assertEqual(script.count('fetch("/health"'), 1)
-            self.assertNotIn('fetch("/chat"', script)
-            self.assertNotIn("/sessions/", script)
+            self.assertGreaterEqual(script.count('requestJson("/health"'), 2)
             self.assertIn("ollama_reachable", script)
             self.assertIn("refreshHealthButton.addEventListener", script)
         finally:
@@ -77,8 +75,81 @@ class AppTests(unittest.TestCase):
     def test_server_status_markup_supports_independent_states(self) -> None:
         page = self.client.get("/").get_data(as_text=True)
         for element_id in ("controller-status", "ollama-status", "configured-model",
-                           "local-server-list", "server-status", "health-message"):
+                           "local-server-list", "server-toggle", "health-message"):
             self.assertIn(f'id="{element_id}"', page)
+
+    def test_tool_console_markup_has_controls_and_locked_defaults(self) -> None:
+        page = self.client.get("/").get_data(as_text=True)
+        for value in ('data-tool="health"', 'data-tool="chat"', 'data-tool="reset"',
+                      'id="clear-output"', 'id="output-log"'):
+            self.assertIn(value, page)
+        self.assertNotIn('id="execute-tool"', page)
+        self.assertIn('id="console-lock" type="button" aria-pressed="true"', page)
+        self.assertIn('id="session-id" name="session_id" value="default"', page)
+        self.assertIn('id="message" name="message"', page)
+
+    def test_tool_console_script_covers_safety_and_api_contracts(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            self.assertEqual(script.count("fetch(path"), 1)
+            self.assertIn('requestJson("/chat"', script)
+            self.assertIn("/sessions/${encodeURIComponent(sessionId)}/reset", script)
+            self.assertIn("window.confirm", script)
+            self.assertIn("REQUEST_TIMEOUT_MS = 190_000", script)
+            self.assertIn("messageInput.value.trim()", script)
+            self.assertIn('event.key === "Enter"', script)
+            self.assertIn("activateTool(button.dataset.tool)", script)
+            self.assertIn("requestRunning", script)
+            self.assertIn("outputLog.replaceChildren()", script)
+            self.assertIn("body.textContent = message", script)
+            self.assertNotIn("innerHTML", script)
+        finally:
+            response.close()
+
+    def test_ollama_control_requires_console_header(self) -> None:
+        response = self.client.post("/ollama/start")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json["error"]["code"], "control_header_required")
+
+    def test_ollama_control_start_and_stop(self) -> None:
+        headers = {"X-Local-AI-Control": "web-console"}
+        for action, status in (("start", "started"), ("stop", "stopped")):
+            with self.subTest(action=action), \
+                    patch(f"ollama_runtime.{action}", return_value=status) as control, \
+                    patch("ollama_runtime.is_online", return_value=action == "start"):
+                response = self.client.post(f"/ollama/{action}", headers=headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json["action"], action)
+                self.assertEqual(response.json["status"], status)
+                control.assert_called_once_with()
+
+    def test_ollama_control_failure_is_structured(self) -> None:
+        import ollama_runtime
+        headers = {"X-Local-AI-Control": "web-console"}
+        with patch("ollama_runtime.start",
+                   side_effect=ollama_runtime.OllamaControlError("test failure")):
+            response = self.client.post("/ollama/start", headers=headers)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json["error"]["code"], "ollama_control_failed")
+
+    def test_ollama_control_rejects_unknown_action(self) -> None:
+        response = self.client.post(
+            "/ollama/restart", headers={"X-Local-AI-Control": "web-console"})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json["error"]["code"], "invalid_ollama_action")
+
+    def test_tool_console_formats_chat_metrics(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            for field in ("elapsed_seconds", "eval_count", "prompt_eval_count",
+                          "tokens_per_second", "total_duration", "load_duration",
+                          "prompt_eval_duration", "eval_duration"):
+                self.assertIn(field, script)
+            self.assertIn("value / 1_000_000_000", script)
+        finally:
+            response.close()
 
     def chat(self, session_id: str = "a", message: str = "질문"):
         return self.client.post("/chat", json={"session_id": session_id, "message": message})

@@ -14,6 +14,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 import ai_controller
+import ollama_runtime
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -45,6 +46,11 @@ def create_app() -> Flask:
 
     def error_response(code: str, message: str, status: int) -> tuple[Response, int]:
         return jsonify(error={"code": code, "message": message}), status
+
+    def require_local_control_header() -> tuple[Response, int] | None:
+        if request.headers.get("X-Local-AI-Control") != "web-console":
+            return error_response("control_header_required", "로컬 콘솔 제어 헤더가 필요합니다.", 403)
+        return None
 
     @app.get("/")
     def index() -> str:
@@ -128,6 +134,19 @@ def create_app() -> Flask:
         with session.lock:
             session.messages.clear()
         return jsonify(session_id=session_id, status="reset")
+
+    @app.post("/ollama/<action>")
+    def control_ollama(action: str) -> tuple[Response, int]:
+        denied = require_local_control_header()
+        if denied:
+            return denied
+        if action not in {"start", "stop"}:
+            return error_response("invalid_ollama_action", "지원하지 않는 Ollama 제어 요청입니다.", 404)
+        try:
+            status = ollama_runtime.start() if action == "start" else ollama_runtime.stop()
+        except ollama_runtime.OllamaControlError as error:
+            return error_response("ollama_control_failed", str(error), 503)
+        return jsonify(action=action, status=status, ollama_reachable=ollama_runtime.is_online()), 200
 
     @app.errorhandler(HTTPException)
     def http_error(error: HTTPException) -> tuple[Response, int]:
