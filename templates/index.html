@@ -56,7 +56,7 @@
             <article class="status-card"><span>Configured Model</span><strong id="configured-model">qwen3.5:9b</strong><small>Thinking OFF</small></article>
           </div>
           <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태 / 제어</th></tr></thead><tbody id="local-server-list"><tr data-server-id="local-ollama"><td>Local Ollama</td><td>127.0.0.1:11434</td><td id="server-model">qwen3.5:9b</td><td><button class="status-pill is-pending" id="server-toggle" type="button" disabled>확인 전</button></td></tr></tbody></table></div>
-          <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. 서버 프로세스 시작·중지 기능은 제공하지 않습니다.</p>
+          <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. Ollama 종료는 다른 프로그램에서 진행 중인 작업도 중단할 수 있습니다.</p>
         </section>
       </main>
     </div>
@@ -74,8 +74,8 @@
       <section class="input-panel panel is-locked" id="input-panel" aria-labelledby="input-title">
         <div class="input-header"><div class="panel-heading compact"><span class="panel-index">D</span><div><h2 id="input-title">Input</h2><p>REQUEST</p></div></div><button class="lock-button" id="console-lock" type="button" aria-pressed="true"><span aria-hidden="true" id="lock-icon">▣</span> <span id="lock-label">Unlock</span></button></div>
         <div class="form-stack">
-          <label for="session-id">Session ID</label><input id="session-id" name="session_id" value="default" autocomplete="off" disabled>
-          <label for="message">Message</label><textarea id="message" name="message" rows="3" placeholder="Unlock 후 메시지를 입력하세요." disabled></textarea>
+          <label for="session-id">Session ID</label><input id="session-id" name="session_id" value="default" maxlength="128" autocomplete="off" disabled>
+          <label for="message">Message</label><textarea id="message" name="message" rows="3" maxlength="10000" placeholder="Unlock 후 메시지를 입력하세요." disabled></textarea>
         </div>
         <p class="lock-note" id="lock-note">입력 보호가 활성화되어 있습니다. Health와 Reset은 실행할 수 있습니다.</p>
       </section>

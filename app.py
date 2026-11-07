@@ -18,6 +18,10 @@ import ollama_runtime
 
 HOST = "127.0.0.1"
 PORT = 5000
+MAX_CONTENT_LENGTH = 1024 * 1024
+MAX_SESSION_ID_LENGTH = 128
+MAX_MESSAGE_LENGTH = 10_000
+MAX_ACTIVE_SESSIONS = 60
 METRIC_FIELDS = (
     "total_duration", "load_duration", "prompt_eval_count",
     "prompt_eval_duration", "eval_count", "eval_duration",
@@ -28,21 +32,51 @@ METRIC_FIELDS = (
 class Session:
     messages: list[dict[str, str]] = field(default_factory=list)
     lock: Any = field(default_factory=Lock)
+    active_requests: int = 0
+    remove_when_unused: bool = False
 
 
 class InvalidOllamaResponse(ValueError):
     """The upstream returned an error or an unusable chat response."""
 
 
+class SessionLimitReached(RuntimeError):
+    """The in-memory active session limit has been reached."""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+    app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     sessions: dict[str, Session] = {}
     sessions_lock = Lock()
 
-    def get_session(session_id: str) -> Session:
+    def acquire_session(session_id: str, create: bool = True) -> tuple[Session | None, bool]:
         with sessions_lock:
-            return sessions.setdefault(session_id, Session())
+            session = sessions.get(session_id)
+            created = False
+            if session is None:
+                if not create:
+                    return None, False
+                if len(sessions) >= MAX_ACTIVE_SESSIONS:
+                    raise SessionLimitReached()
+                session = Session()
+                sessions[session_id] = session
+                created = True
+            session.active_requests += 1
+            return session, created
+
+    def release_session(session_id: str, session: Session, *,
+                        failed_creation: bool = False, reset: bool = False,
+                        committed: bool = False) -> None:
+        with sessions_lock:
+            if failed_creation or reset:
+                session.remove_when_unused = True
+            if committed:
+                session.remove_when_unused = False
+            session.active_requests -= 1
+            if (session.active_requests == 0 and session.remove_when_unused
+                    and not session.messages and sessions.get(session_id) is session):
+                del sessions[session_id]
 
     def error_response(code: str, message: str, status: int) -> tuple[Response, int]:
         return jsonify(error={"code": code, "message": message}), status
@@ -78,25 +112,38 @@ def create_app() -> Flask:
         message = data.get("message")
         if not isinstance(session_id, str) or not session_id.strip():
             return error_response("invalid_session_id", "session_id는 비어 있지 않은 문자열이어야 합니다.", 400)
+        if len(session_id) > MAX_SESSION_ID_LENGTH:
+            return error_response("invalid_session_id", f"session_id는 {MAX_SESSION_ID_LENGTH}자 이하여야 합니다.", 400)
         if not isinstance(message, str) or not message.strip():
             return error_response("invalid_message", "message는 비어 있지 않은 문자열이어야 합니다.", 400)
+        if len(message) > MAX_MESSAGE_LENGTH:
+            return error_response("invalid_message", f"message는 {MAX_MESSAGE_LENGTH:,}자 이하여야 합니다.", 400)
 
         started = time.perf_counter()
-        session = get_session(session_id)
-        # Keep a chat and a concurrent reset on the same session ordered.
-        with session.lock:
-            messages = session.messages or [
-                {"role": "system", "content": ai_controller.SYSTEM_PROMPT},
-            ]
-            user_message = {"role": "user", "content": message}
-            try:
+        try:
+            session, created = acquire_session(session_id)
+        except SessionLimitReached:
+            return error_response(
+                "session_limit_reached",
+                f"활성 세션은 최대 {MAX_ACTIVE_SESSIONS}개까지 사용할 수 있습니다.", 429,
+            )
+        assert session is not None
+        committed = False
+        try:
+            # Keep a chat and a concurrent reset on the same session ordered.
+            with session.lock:
+                messages = session.messages or [
+                    {"role": "system", "content": ai_controller.SYSTEM_PROMPT},
+                ]
+                user_message = {"role": "user", "content": message}
                 result = ai_controller.ask_ollama(messages + [user_message])
                 if not isinstance(result, dict) or result.get("error"):
                     raise InvalidOllamaResponse()
                 assistant = result.get("message")
                 if (not isinstance(assistant, dict)
                         or assistant.get("role") != "assistant"
-                        or not isinstance(assistant.get("content"), str)):
+                        or not isinstance(assistant.get("content"), str)
+                        or not assistant.get("content").strip()):
                     raise InvalidOllamaResponse()
                 metrics = {key: result[key] for key in METRIC_FIELDS if key in result}
                 if any(isinstance(value, bool) or not isinstance(value, (int, float))
@@ -107,21 +154,25 @@ def create_app() -> Flask:
                     metrics["eval_count"] / (duration / 1e9)
                     if duration and "eval_count" in metrics else None
                 )
-            except urllib.error.HTTPError:
-                return error_response("ollama_model_error", "Ollama 요청이 거부되었습니다. 모델명과 Ollama 상태를 확인하세요.", 502)
-            except TimeoutError:
+                answer = {"role": "assistant", "content": assistant["content"]}
+                session.messages = messages + [user_message, answer]
+                committed = True
+        except urllib.error.HTTPError:
+            return error_response("ollama_model_error", "Ollama 요청이 거부되었습니다. 모델명과 Ollama 상태를 확인하세요.", 502)
+        except TimeoutError:
+            return error_response("ollama_timeout", "Ollama 응답 시간이 초과되었습니다.", 504)
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, TimeoutError):
                 return error_response("ollama_timeout", "Ollama 응답 시간이 초과되었습니다.", 504)
-            except urllib.error.URLError as error:
-                if isinstance(error.reason, TimeoutError):
-                    return error_response("ollama_timeout", "Ollama 응답 시간이 초과되었습니다.", 504)
-                return error_response("ollama_unavailable", "Ollama에 연결할 수 없습니다.", 503)
-            except (ValueError, UnicodeError):
-                return error_response("invalid_ollama_response", "Ollama 응답 형식이 올바르지 않습니다.", 502)
-            except OSError:
-                return error_response("ollama_unavailable", "Ollama에 연결할 수 없습니다.", 503)
-
-            answer = {"role": "assistant", "content": assistant["content"]}
-            session.messages = messages + [user_message, answer]
+            return error_response("ollama_unavailable", "Ollama에 연결할 수 없습니다.", 503)
+        except (ValueError, UnicodeError):
+            return error_response("invalid_ollama_response", "Ollama 응답 형식이 올바르지 않습니다.", 502)
+        except OSError:
+            return error_response("ollama_unavailable", "Ollama에 연결할 수 없습니다.", 503)
+        finally:
+            release_session(session_id, session,
+                            failed_creation=created and not committed,
+                            committed=committed)
         return jsonify(
             session_id=session_id, model=ai_controller.MODEL,
             message=answer["content"], elapsed_seconds=time.perf_counter() - started,
@@ -129,10 +180,16 @@ def create_app() -> Flask:
         ), 200
 
     @app.post("/sessions/<session_id>/reset")
-    def reset(session_id: str) -> Response:
-        session = get_session(session_id)
-        with session.lock:
-            session.messages.clear()
+    def reset(session_id: str) -> Response | tuple[Response, int]:
+        if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
+            return error_response("invalid_session_id", f"session_id는 {MAX_SESSION_ID_LENGTH}자 이하의 문자열이어야 합니다.", 400)
+        session, _ = acquire_session(session_id, create=False)
+        if session is not None:
+            try:
+                with session.lock:
+                    session.messages.clear()
+            finally:
+                release_session(session_id, session, reset=True)
         return jsonify(session_id=session_id, status="reset")
 
     @app.post("/ollama/<action>")

@@ -266,7 +266,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const toggleOllamaServer = async () => {
     if (serverToggle.disabled || requestRunning) return;
     const online = serverToggle.dataset.online === "true";
-    if (online && !window.confirm("Ollama 서버를 종료할까요? 진행 중인 생성 요청이 중단될 수 있습니다.")) return;
+    if (online && !window.confirm("Ollama 서버를 종료할까요? 이 콘솔뿐 아니라 다른 프로그램에서 진행 중인 Ollama 작업도 중단될 수 있습니다.")) return;
     serverToggle.disabled = true;
     setStatus(serverStatus, online ? "Stopping…" : "Starting…", "pending");
     try {
