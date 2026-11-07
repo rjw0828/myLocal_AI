@@ -38,7 +38,7 @@ class AppTests(unittest.TestCase):
         self.assertIn('id="guide-view"', page)
         self.assertIn('id="server-view"', page)
         self.assertIn('id="console-lock"', page)
-        self.assertNotIn("fetch(", page)
+        self.assertIn('id="refresh-health"', page)
 
     def test_ui_static_assets_are_available(self) -> None:
         for path, mime_types in (
@@ -61,6 +61,24 @@ class AppTests(unittest.TestCase):
             self.assertIn("clamp(210px, 20vh, 240px)", css)
         finally:
             response.close()
+
+    def test_server_status_ui_uses_health_only(self) -> None:
+        response = self.client.get("/static/js/main.js")
+        try:
+            script = response.get_data(as_text=True)
+            self.assertEqual(script.count('fetch("/health"'), 1)
+            self.assertNotIn('fetch("/chat"', script)
+            self.assertNotIn("/sessions/", script)
+            self.assertIn("ollama_reachable", script)
+            self.assertIn("refreshHealthButton.addEventListener", script)
+        finally:
+            response.close()
+
+    def test_server_status_markup_supports_independent_states(self) -> None:
+        page = self.client.get("/").get_data(as_text=True)
+        for element_id in ("controller-status", "ollama-status", "configured-model",
+                           "local-server-list", "server-status", "health-message"):
+            self.assertIn(f'id="{element_id}"', page)
 
     def chat(self, session_id: str = "a", message: str = "질문"):
         return self.client.post("/chat", json={"session_id": session_id, "message": message})

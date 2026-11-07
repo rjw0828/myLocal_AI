@@ -49,14 +49,14 @@
 
         <section id="server-view" class="server-view" aria-labelledby="server-title" hidden>
           <div class="eyebrow">A · Local Server Management</div>
-          <div class="section-title-row"><div><p class="kicker">LOCAL RUNTIME</p><h1 id="server-title">AI Serve Locals</h1><p>등록된 로컬 AI 서버의 구성과 상태를 확인하는 화면입니다.</p></div><button class="secondary-button" type="button" disabled title="STEP 3에서 연결됩니다">상태 새로고침</button></div>
+          <div class="section-title-row"><div><p class="kicker">LOCAL RUNTIME</p><h1 id="server-title">AI Serve Locals</h1><p>등록된 로컬 AI 서버의 구성과 상태를 확인하는 화면입니다.</p></div><button class="secondary-button" id="refresh-health" type="button">Refresh</button></div>
           <div class="status-cards">
-            <article class="status-card"><span>Flask Controller</span><strong>연결 대기</strong><small>127.0.0.1:5000</small></article>
-            <article class="status-card"><span>Ollama</span><strong>확인 전</strong><small>127.0.0.1:11434</small></article>
-            <article class="status-card"><span>Configured Model</span><strong>qwen3.5:9b</strong><small>Thinking OFF</small></article>
+            <article class="status-card" id="controller-card"><span>Flask Controller</span><strong id="controller-status" class="status-value is-pending">연결 대기</strong><small>127.0.0.1:5000</small></article>
+            <article class="status-card" id="ollama-card"><span>Ollama Server</span><strong id="ollama-status" class="status-value is-pending">확인 전</strong><small>127.0.0.1:11434</small></article>
+            <article class="status-card"><span>Configured Model</span><strong id="configured-model">qwen3.5:9b</strong><small>Thinking OFF</small></article>
           </div>
-          <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태</th></tr></thead><tbody><tr><td>Local Ollama</td><td>127.0.0.1:11434</td><td>qwen3.5:9b</td><td><span class="status-pill">확인 전</span></td></tr></tbody></table></div>
-          <p class="notice">서버 프로세스 시작·중지 기능은 제공하지 않습니다. 실제 상태 조회는 STEP 3에서 연결됩니다.</p>
+          <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태</th></tr></thead><tbody id="local-server-list"><tr data-server-id="local-ollama"><td>Local Ollama</td><td>127.0.0.1:11434</td><td id="server-model">qwen3.5:9b</td><td><span class="status-pill is-pending" id="server-status">확인 전</span></td></tr></tbody></table></div>
+          <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. 서버 프로세스 시작·중지 기능은 제공하지 않습니다.</p>
         </section>
       </main>
     </div>
