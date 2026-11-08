@@ -6,6 +6,7 @@ Run with `python app.py` to use the fixed loopback binding.
 import math
 import time
 import urllib.error
+from uuid import uuid4
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
@@ -23,6 +24,7 @@ MAX_CONTENT_LENGTH = 1024 * 1024
 MAX_SESSION_ID_LENGTH = 128
 MAX_MESSAGE_LENGTH = 10_000
 MAX_ACTIVE_SESSIONS = 60
+SESSION_TITLE_LENGTH = 40
 MAX_STT_AUDIO_BYTES = 10 * 1024 * 1024
 # Multipart boundaries and headers sit outside the audio field itself.
 MAX_STT_REQUEST_LENGTH = MAX_STT_AUDIO_BYTES + 64 * 1024
@@ -30,6 +32,10 @@ MAX_TTS_TEXT_LENGTH = 500
 RESPONSE_LANGUAGE_PROMPTS = {
     "ko": "You are a personal local AI assistant. Answer clearly and concisely in Korean, using Hangul. Use Korean for this response even if the question or earlier conversation is in English. Do not answer in English or Chinese.",
     "en": "You are a personal local AI assistant. Answer clearly and concisely in English. Use English for this response, even if earlier conversation is in Korean.",
+}
+RESPONSE_LANGUAGE_TURN_INSTRUCTIONS = {
+    "ko": "이번 답변은 질문이나 이전 대화의 언어와 관계없이 한국어(한글)로만 작성하세요. 영어 또는 중국어로 답변하지 마세요.",
+    "en": "Write your entire answer in English, regardless of the language of the question or earlier conversation. Do not answer in Korean or Chinese.",
 }
 VOICE_RESPONSE_STYLE = (
     " This turn is a spoken conversation. Reply naturally in 1–3 short sentences, "
@@ -44,9 +50,16 @@ METRIC_FIELDS = (
 @dataclass
 class Session:
     messages: list[dict[str, str]] = field(default_factory=list)
+    number: int = 0
+    title: str = "새 대화"
+    titled: bool = False
+    explicit: bool = False
+    answer_languages: list[str | None] = field(default_factory=list)
     lock: Any = field(default_factory=Lock)
     active_requests: int = 0
     remove_when_unused: bool = False
+    deleting: bool = False
+    deleted: bool = False
 
 
 class InvalidOllamaResponse(ValueError):
@@ -57,11 +70,21 @@ class SessionLimitReached(RuntimeError):
     """The in-memory active session limit has been reached."""
 
 
+class SessionDeleted(RuntimeError):
+    """A deleted ID must never implicitly create another session."""
+
+
+class SessionDeleting(RuntimeError):
+    """The session is being removed after an already running operation."""
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     sessions: dict[str, Session] = {}
+    deleted_session_ids: set[str] = set()
     sessions_lock = Lock()
+    next_session_number = 1
 
     @app.before_request
     def apply_endpoint_upload_limit() -> None:
@@ -74,15 +97,21 @@ def create_app() -> Flask:
             request.close()
 
     def acquire_session(session_id: str, create: bool = True) -> tuple[Session | None, bool]:
+        nonlocal next_session_number
         with sessions_lock:
+            if session_id in deleted_session_ids:
+                raise SessionDeleted()
             session = sessions.get(session_id)
+            if session is not None and session.deleting:
+                raise SessionDeleting()
             created = False
             if session is None:
                 if not create:
                     return None, False
                 if len(sessions) >= MAX_ACTIVE_SESSIONS:
                     raise SessionLimitReached()
-                session = Session()
+                session = Session(number=next_session_number)
+                next_session_number += 1
                 sessions[session_id] = session
                 created = True
             session.active_requests += 1
@@ -98,8 +127,116 @@ def create_app() -> Flask:
                 session.remove_when_unused = False
             session.active_requests -= 1
             if (session.active_requests == 0 and session.remove_when_unused
+                    and not session.explicit
                     and not session.messages and sessions.get(session_id) is session):
                 del sessions[session_id]
+
+    def session_summary(session_id: str, session: Session) -> dict[str, Any]:
+        return {"session_id": session_id, "number": session.number, "title": session.title}
+
+    def require_live_session(session: Session) -> None:
+        # Also check after taking the per-session lock: a queued request may
+        # have acquired its reference before Delete marked the session.
+        if session.deleted:
+            raise SessionDeleted()
+        if session.deleting:
+            raise SessionDeleting()
+
+    @app.get("/sessions")
+    def list_sessions() -> Response:
+        with sessions_lock:
+            snapshot = list(sessions.items())
+        items = []
+        for session_id, session in snapshot:
+            with session.lock:
+                if not session.deleting:
+                    items.append(session_summary(session_id, session))
+        items.sort(key=lambda item: item["number"])
+        return jsonify(sessions=items)
+
+    @app.post("/sessions")
+    def create_session() -> Response | tuple[Response, int]:
+        nonlocal next_session_number
+        with sessions_lock:
+            if len(sessions) >= MAX_ACTIVE_SESSIONS:
+                return error_response(
+                    "session_limit_reached",
+                    f"활성 세션은 최대 {MAX_ACTIVE_SESSIONS}개까지 사용할 수 있습니다.", 429,
+                )
+            session_id = f"s-{uuid4().hex}"
+            while session_id in sessions or session_id in deleted_session_ids:
+                session_id = f"s-{uuid4().hex}"
+            session = Session(number=next_session_number, explicit=True)
+            next_session_number += 1
+            sessions[session_id] = session
+            summary = session_summary(session_id, session)
+        return jsonify(summary), 201
+
+    @app.get("/sessions/<session_id>/history")
+    def session_history(session_id: str) -> Response | tuple[Response, int]:
+        if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
+            return error_response("invalid_session_id", "유효한 session_id가 필요합니다.", 400)
+        session, _ = acquire_session(session_id, create=False)
+        if session is None:
+            return error_response("session_not_found", "세션을 찾을 수 없습니다.", 404)
+        try:
+            with session.lock:
+                require_live_session(session)
+                summary = session_summary(session_id, session)
+                answer_index = 0
+                messages = []
+                for item in session.messages:
+                    if item["role"] not in {"user", "assistant"}:
+                        continue
+                    entry = {"role": item["role"], "content": item["content"]}
+                    if item["role"] == "assistant":
+                        language = (session.answer_languages[answer_index]
+                                    if answer_index < len(session.answer_languages) else None)
+                        entry["language"] = language
+                        answer_index += 1
+                    messages.append(entry)
+                return jsonify(**summary, messages=messages)
+        finally:
+            release_session(session_id, session)
+
+    @app.delete("/sessions/<session_id>")
+    def delete_session(session_id: str) -> Response | tuple[Response, int]:
+        if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
+            return error_response("invalid_session_id", "유효한 session_id가 필요합니다.", 400)
+        with sessions_lock:
+            session = sessions.get(session_id)
+            if session is None:
+                return error_response("session_not_found", "세션을 찾을 수 없습니다.", 404)
+            if session.deleting:
+                raise SessionDeleting()
+            session.deleting = True
+            session.active_requests += 1  # Pin legacy sessions until removal.
+        try:
+            # A Chat already owning the lock finishes first. All queued/new
+            # operations are rejected; no old request can recreate this ID.
+            with session.lock:
+                with sessions_lock:
+                    deleted_session_ids.add(session_id)
+                    sessions.pop(session_id, None)
+                    session.deleted = True
+                session.messages.clear()
+                session.answer_languages.clear()
+                session.title = ""
+                session.titled = False
+            return jsonify(session_id=session_id, status="deleted")
+        finally:
+            if not session.deleted:
+                with sessions_lock:
+                    session.deleting = False
+            release_session(session_id, session)
+
+    @app.errorhandler(SessionDeleted)
+    def deleted_session_error(_error: SessionDeleted) -> tuple[Response, int]:
+        return error_response("session_deleted", "삭제된 세션입니다. 새 세션을 생성하세요.", 410)
+
+    @app.errorhandler(SessionDeleting)
+    def deleting_session_error(_error: SessionDeleting) -> tuple[Response, int]:
+        return error_response("session_deleting", "세션 삭제가 진행 중입니다.", 409)
 
     def error_response(code: str, message: str, status: int) -> tuple[Response, int]:
         return jsonify(error={"code": code, "message": message}), status
@@ -168,6 +305,7 @@ def create_app() -> Flask:
         try:
             # Keep a chat and a concurrent reset on the same session ordered.
             with session.lock:
+                require_live_session(session)
                 messages = session.messages or [
                     {"role": "system", "content": ai_controller.SYSTEM_PROMPT},
                 ]
@@ -185,8 +323,20 @@ def create_app() -> Flask:
                         {"role": "system", "content": messages[0]["content"] + VOICE_RESPONSE_STYLE},
                         *messages[1:],
                     ]
+                request_user_message = user_message
+                if response_language is not None:
+                    # Imported models may use {{ .Prompt }} and omit system roles.
+                    # Reinforce the selected output language in the current prompt
+                    # without storing these instructions as conversation history.
+                    instruction = RESPONSE_LANGUAGE_TURN_INSTRUCTIONS[response_language]
+                    if request.headers.get("X-Local-AI-Response-Style") == "voice":
+                        instruction += VOICE_RESPONSE_STYLE
+                    request_user_message = {
+                        "role": "user",
+                        "content": f"{message}\n\n[Response requirements]\n{instruction}",
+                    }
                 ollama_started = time.perf_counter()
-                result = ai_controller.ask_ollama(request_messages + [user_message])
+                result = ai_controller.ask_ollama(request_messages + [request_user_message])
                 ollama_seconds = time.perf_counter() - ollama_started
                 if not isinstance(result, dict) or result.get("error"):
                     raise InvalidOllamaResponse()
@@ -207,6 +357,11 @@ def create_app() -> Flask:
                 )
                 answer = {"role": "assistant", "content": assistant["content"]}
                 session.messages = messages + [user_message, answer]
+                if not session.titled:
+                    first = message.strip().replace("\r", " ").replace("\n", " ")
+                    session.title = first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
+                    session.titled = True
+                session.answer_languages.append(response_language)
                 committed = True
         except urllib.error.HTTPError:
             return error_response("ollama_model_error", "Ollama 요청이 거부되었습니다. 모델명과 Ollama 상태를 확인하세요.", 502)
@@ -363,7 +518,11 @@ def create_app() -> Flask:
         if session is not None:
             try:
                 with session.lock:
+                    require_live_session(session)
                     session.messages.clear()
+                    session.answer_languages.clear()
+                    session.title = "새 대화"
+                    session.titled = False
             finally:
                 release_session(session_id, session, reset=True)
         return jsonify(session_id=session_id, status="reset")

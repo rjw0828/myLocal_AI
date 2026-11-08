@@ -22,6 +22,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const lockIcon = $("#lock-icon");
   const inputPanel = $("#input-panel");
   const sessionInput = $("#session-id");
+  const newChatButton = $("#new-chat");
+  const currentSessionLabel = $("#current-session");
+  const sessionListButton = $("#session-list-button");
+  const resetSessionButton = $("#reset-session");
+  const sessionPopup = $("#session-popup");
+  const sessionPopupItems = $("#session-popup-items");
   const messageInput = $("#message");
   const lockNote = $("#lock-note");
   const clearOutputButton = $("#clear-output");
@@ -36,7 +42,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const voiceTimer = $("#voice-timer");
   const voiceModeButton = $("#voice-mode");
   const cancelVoiceTurnButton = $("#cancel-voice-turn");
-  const voicePreset = $("#voice-preset");
   let voiceModeEnabled = false;
   let sessionRevision = 0;
   let recordingTurn = null;
@@ -48,7 +53,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const VOICE_MAX_MS = 30_000;
   const VOICE_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm"];
   const TTS_MAX_CODE_POINTS = 500;
-  let selectedTool = "health";
   let requestRunning = false;
   let voiceState = "idle";
   let voiceOperationId = 0;
@@ -64,7 +68,15 @@ document.addEventListener("DOMContentLoaded", () => {
   let recordingCancelled = false;
   let recordingFailure = null;
   const conversations = new Map();
-  let currentConversationSession = sessionInput.value.trim() || "default";
+  const sessionDetails = new Map();
+  const sessionResetVersions = new Map();
+  const deletingSessions = new Set();
+  const deletedSessions = new Set();
+  let manualSttController = null;
+  let currentConversationSession = "";
+  let historyLoadId = 0;
+  let sessionListLoadId = 0;
+  let sessionCreating = false;
   let conversationMessageId = 0;
   let ttsGeneration = 0;
   let ttsState = "idle";
@@ -318,6 +330,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const startTts = async (button, status, message, turn = null, onSpeaking = null) => {
+    if (deletingSessions.has(currentConversationSession) || deletedSessions.has(currentConversationSession)) return;
     if (turn && !voiceTurns.valid(turn)) return;
     if (ttsTextLength(message.content) > TTS_MAX_CODE_POINTS) {
       status.textContent = `TTS supports up to ${TTS_MAX_CODE_POINTS} characters.`;
@@ -394,12 +407,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  const renderSessionHeading = (sessionId) => {
+    const detail = sessionDetails.get(sessionId);
+    const uncertain = sessionId && chatGuard.reason(sessionId) === "chat_state_uncertain";
+    const caption = detail ? `Session ${detail.number} — ${detail.title}`
+      : uncertain ? "세션 상태 확인 필요 · + New Chat" : "선택된 세션 없음 · + New Chat";
+    conversationSession.textContent = detail ? `SESSION ${detail.number}` : uncertain ? "SESSION · 확인 필요" : "SESSION · 없음";
+    currentSessionLabel.textContent = caption;
+    currentSessionLabel.title = caption;
+  };
   const renderConversation = (sessionId) => {
     currentConversationSession = sessionId;
-    conversationSession.textContent = `SESSION · ${sessionId}`;
+    renderSessionHeading(sessionId);
     conversationOutput.replaceChildren();
     const messages = conversations.get(sessionId) || [];
     if (messages.length === 0) {
+      conversationEmpty.textContent = sessionId
+        ? "Chat을 실행하면 현재 세션의 대화가 여기에 표시됩니다."
+        : "세션이 없습니다. D의 + New Chat으로 새 대화를 시작하세요.";
       conversationOutput.append(conversationEmpty);
       return;
     }
@@ -441,10 +466,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const setConversationSession = (sessionId) => {
     if (sessionId !== currentConversationSession) stopTts("Session changed. Previous TTS playback was stopped.");
-    renderConversation(sessionId || "(empty)");
+    renderConversation(sessionId || "");
   };
 
   const appendConversation = (sessionId, role, content, language = null) => {
+    if (deletedSessions.has(sessionId) || deletingSessions.has(sessionId)) return null;
     const messages = conversations.get(sessionId) || [];
     if (currentConversationSession === sessionId && ttsState !== "idle") {
       stopTts("Conversation changed. Previous TTS playback was stopped.");
@@ -453,6 +479,215 @@ document.addEventListener("DOMContentLoaded", () => {
     conversations.set(sessionId, messages);
     if (currentConversationSession === sessionId) renderConversation(sessionId);
     return messages[messages.length - 1];
+  };
+
+  const sessionCaption = (detail) => `Session ${detail.number} — ${detail.title}`;
+  const rememberSelection = (sessionId) => {
+    try { if (chatStorage) chatStorage.setItem("local-ai-selected-session", sessionId); }
+    catch (_error) { /* Selection remains in memory. */ }
+  };
+  const closeSessionPopup = () => {
+    sessionPopup.hidden = true;
+    sessionListButton.setAttribute("aria-expanded", "false");
+  };
+  const positionSessionPopup = () => {
+    if (sessionPopup.hidden) return;
+    let rect = sessionListButton.getBoundingClientRect();
+    if (rect.top < 100 && typeof sessionListButton.scrollIntoView === "function") {
+      sessionListButton.scrollIntoView({ block: "end" });
+      rect = sessionListButton.getBoundingClientRect();
+    }
+    const room = Math.max(0, rect.top - 12);
+    const above = room >= 80;
+    const height = Math.min(320, above ? room : Math.max(0, window.innerHeight - 16));
+    sessionPopup.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 230) - 8))}px`;
+    sessionPopup.style.width = `${Math.min(Math.max(rect.width, 230), window.innerWidth - 16)}px`;
+    sessionPopup.style.maxHeight = `${height}px`;
+    sessionPopupItems.style.maxHeight = `${height}px`;
+    sessionPopup.style.bottom = above ? `${Math.max(8, window.innerHeight - rect.top + 4)}px` : "auto";
+    sessionPopup.style.top = above ? "auto" : "8px";
+  };
+  const refreshSessionList = async () => {
+    const loadId = ++sessionListLoadId;
+    const result = requireSuccess(await requestJson("/sessions", { method: "GET" }));
+    if (!Array.isArray(result.sessions)) throw new ApiError("Session List 응답이 올바르지 않습니다.");
+    if (loadId !== sessionListLoadId) return [];
+    const latest = new Map();
+    const items = result.sessions.filter((detail) => !deletedSessions.has(detail.session_id));
+    for (const detail of items) {
+      if (typeof detail.session_id !== "string" || !Number.isInteger(detail.number)
+          || typeof detail.title !== "string") throw new ApiError("Session List 응답이 올바르지 않습니다.");
+      latest.set(detail.session_id, detail);
+    }
+    sessionDetails.clear();
+    latest.forEach((value, key) => sessionDetails.set(key, value));
+    if (currentConversationSession) renderSessionHeading(currentConversationSession);
+    sessionPopupItems.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "저장된 RAM 세션이 없습니다.";
+      sessionPopupItems.append(empty);
+    }
+    items.forEach((detail) => {
+      const row = document.createElement("div");
+      row.className = "session-row";
+      row.dataset.sessionId = detail.session_id;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "session-choice";
+      button.textContent = sessionCaption(detail);
+      button.dataset.sessionId = detail.session_id;
+      button.setAttribute("aria-current", String(detail.session_id === sessionInput.value));
+      button.disabled = deletingSessions.has(detail.session_id);
+      button.addEventListener("click", () => { closeSessionPopup(); selectSession(detail.session_id); });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "session-delete";
+      remove.textContent = "Delete";
+      remove.setAttribute("aria-label", `${sessionCaption(detail)} 삭제`);
+      remove.disabled = deletingSessions.has(detail.session_id);
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSession(detail.session_id);
+      });
+      row.append(button, remove);
+      sessionPopupItems.append(row);
+    });
+    return items;
+  };
+  const loadSessionHistory = async (sessionId, revision) => {
+    const loadId = ++historyLoadId;
+    const resetVersion = sessionResetVersions.get(sessionId) || 0;
+    const isCurrent = () => loadId === historyLoadId && revision === sessionRevision
+      && sessionInput.value === sessionId
+      && !deletedSessions.has(sessionId) && !deletingSessions.has(sessionId)
+      && resetVersion === (sessionResetVersions.get(sessionId) || 0);
+    try {
+      const result = requireSuccess(await requestJson(`/sessions/${encodeURIComponent(sessionId)}/history`, { method: "GET" }));
+      if (!isCurrent()) return;
+      if (result.session_id !== sessionId || !Array.isArray(result.messages)) throw new ApiError("History 응답이 올바르지 않습니다.");
+      if (chatGuard.reason(sessionId)) return; // Never overwrite a pending local Chat.
+      const messages = result.messages.map((item) => {
+        if (!["user", "assistant"].includes(item.role) || typeof item.content !== "string") {
+          throw new ApiError("History 응답이 올바르지 않습니다.");
+        }
+        return { id: ++conversationMessageId, role: item.role, content: item.content,
+          language: ["ko", "en"].includes(item.language) ? item.language : null };
+      });
+      conversations.set(sessionId, messages);
+      sessionDetails.set(sessionId, { session_id: sessionId, number: result.number, title: result.title });
+      renderConversation(sessionId);
+      updateInputState();
+    } catch (error) {
+      if (isCurrent()) appendLog("ERROR", "GET /sessions/{id}/history", errorMessage(error));
+    }
+  };
+  const selectSession = (sessionId) => {
+    if (!sessionDetails.has(sessionId) || deletedSessions.has(sessionId) || deletingSessions.has(sessionId)) return;
+    closeSessionPopup();
+    sessionInput.value = sessionId;
+    sessionInput.dispatchEvent(new Event("input"));
+    rememberSelection(sessionId);
+    loadSessionHistory(sessionId, sessionRevision);
+  };
+  const clearSelectedSession = () => {
+    sessionInput.value = "";
+    sessionInput.dispatchEvent(new Event("input"));
+    rememberSelection("");
+  };
+  const deleteSession = async (sessionId) => {
+    const detail = sessionDetails.get(sessionId);
+    if (!detail || deletingSessions.has(sessionId) || deletedSessions.has(sessionId)) return;
+    if (!window.confirm(`${sessionCaption(detail)}\n이 세션과 대화 기록을 완전히 삭제할까요?`)) return;
+    const order = [...sessionDetails.keys()];
+    const index = order.indexOf(sessionId);
+    const fallbackOrder = [...order.slice(index + 1), ...order.slice(0, index).reverse()];
+    const removeLocalSession = () => {
+      deletedSessions.add(sessionId);
+      sessionListLoadId += 1;
+      sessionResetVersions.set(sessionId, (sessionResetVersions.get(sessionId) || 0) + 1);
+      conversations.delete(sessionId);
+      sessionDetails.delete(sessionId);
+      if (sessionInput.value === sessionId) {
+        const next = fallbackOrder.find((id) => sessionDetails.has(id) && !deletingSessions.has(id));
+        if (next) selectSession(next);
+        else clearSelectedSession();
+      }
+    };
+    deletingSessions.add(sessionId);
+    sessionListLoadId += 1;
+    sessionResetVersions.set(sessionId, (sessionResetVersions.get(sessionId) || 0) + 1);
+    if (sessionInput.value === sessionId) {
+      sessionRevision += 1;
+      voiceTurns.cancel("Session deletion approved.");
+      if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
+      stopTts("Session deletion approved. Playback stopped.");
+    }
+    sessionPopupItems.querySelectorAll(".session-row").forEach((row) => {
+      if (row.dataset.sessionId === sessionId) row.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    });
+    updateInputState();
+    appendLog("RUNNING", "DELETE /sessions/{id}", `Deleting Session ${detail.number}; waiting for observed work to finish.`);
+    try {
+      await chatGuard.beforeReset(sessionId);
+      const packet = await chatGuard.run(sessionId, async (confirmCompletion) => {
+        const response = await requestJson(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+        if (response.response.ok && (response.data.session_id !== sessionId || response.data.status !== "deleted")) {
+          throw new ApiError("Invalid Delete response; server completion is unknown.");
+        }
+        confirmCompletion();
+        return response;
+      });
+      const result = requireSuccess(packet);
+      if (result.session_id !== sessionId || result.status !== "deleted") throw new ApiError("Invalid Delete response.");
+      removeLocalSession();
+      appendLog("SUCCESS", "DELETE /sessions/{id}", `Session ${detail.number} deleted.`);
+    } catch (error) {
+      appendLog("ERROR", "DELETE /sessions/{id}", errorMessage(error));
+      if ([404, 410].includes(error.status)) removeLocalSession();
+      if (chatGuard.reason(sessionId) === "chat_state_uncertain") {
+        appendLog("INFO", "SESSION STATE", "Server completion is unknown. This session stays blocked; no automatic retry or new session was created.");
+      }
+    } finally {
+      deletingSessions.delete(sessionId);
+      updateInputState();
+      refreshSessionList().then(() => {
+        if (!deletedSessions.has(sessionId) && !chatGuard.reason(sessionId) && sessionInput.value === sessionId) {
+          loadSessionHistory(sessionId, sessionRevision);
+        }
+      }).catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
+    }
+  };
+  const createNewSession = async () => {
+    if (sessionCreating || requestRunning) return;
+    sessionCreating = true;
+    newChatButton.disabled = true;
+    try {
+      const detail = requireSuccess(await requestJson("/sessions", { method: "POST" }));
+      if (typeof detail.session_id !== "string" || !Number.isInteger(detail.number)) throw new ApiError("새 세션 응답이 올바르지 않습니다.");
+      sessionListLoadId += 1; // Ignore a list snapshot taken before this creation.
+      sessionDetails.set(detail.session_id, detail);
+      selectSession(detail.session_id);
+      appendLog("SUCCESS", "POST /sessions", `Session ${detail.number} created.`);
+    } catch (error) {
+      appendLog("ERROR", "POST /sessions", errorMessage(error));
+    } finally {
+      sessionCreating = false;
+      updateInputState();
+    }
+  };
+  const initializeSessions = async () => {
+    try {
+      const items = await refreshSessionList();
+      if (!items.length) { clearSelectedSession(); return; }
+      let selected = null;
+      try { selected = chatStorage && chatStorage.getItem("local-ai-selected-session"); } catch (_error) { /* Use first session. */ }
+      const existing = items.find((item) => item.session_id === selected) || items[0];
+      selectSession(existing.session_id);
+    } catch (error) {
+      appendLog("ERROR", "GET /sessions", errorMessage(error));
+      updateInputState();
+    }
   };
 
   const secondsFromNanoseconds = (value) => `${(value / 1_000_000_000).toFixed(3)}s`;
@@ -640,11 +875,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const requestStartedAt = performance.now();
     const controller = new AbortController();
     if (turn) turn.controllers.add(controller);
-    const requestResult = await requestJson("/voice/transcribe", {
-      method: "POST",
-      body: formData,
-    }, controller);
-    if (turn) turn.controllers.delete(controller);
+    else manualSttController = controller;
+    let requestResult;
+    try {
+      requestResult = await requestJson("/voice/transcribe", {
+        method: "POST", body: formData,
+      }, controller);
+    } finally {
+      if (turn) turn.controllers.delete(controller);
+      if (manualSttController === controller) manualSttController = null;
+    }
     requireCurrent();
     const responseReceivedAt = performance.now();
     const result = requireSuccess(requestResult);
@@ -742,6 +982,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const startRecording = async () => {
     const locked = lockButton.getAttribute("aria-pressed") === "true";
+    if (!sessionInput.value || deletingSessions.has(sessionInput.value) || deletedSessions.has(sessionInput.value)) return;
     if (locked || requestRunning || isVoiceBusy()) return;
     if (voiceTurns.active) return;
     try {
@@ -833,27 +1074,28 @@ document.addEventListener("DOMContentLoaded", () => {
     const locked = lockButton.getAttribute("aria-pressed") === "true";
     const voiceBusy = isVoiceBusy();
     const automatic = Boolean(voiceTurns && voiceTurns.active);
-    const blocked = chatGuard.reason(sessionInput.value.trim());
-    sessionInput.disabled = locked || (selectedTool === "health" && !voiceModeEnabled) || requestRunning;
-    messageInput.disabled = locked || selectedTool !== "chat" || requestRunning || voiceBusy;
+    const sessionId = sessionInput.value.trim();
+    const blocked = sessionId ? chatGuard.reason(sessionId) : null;
+    const unavailable = deletingSessions.has(sessionId) || deletedSessions.has(sessionId);
+    newChatButton.disabled = sessionCreating || requestRunning;
+    messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy;
     sttLanguage.disabled = locked || requestRunning || voiceBusy;
-    recordVoiceButton.disabled = locked || requestRunning
+    recordVoiceButton.disabled = locked || !sessionId || unavailable || requestRunning
       || Boolean(blocked) || (automatic && voiceState !== "recording")
       || (["requesting", "transcribing"].includes(voiceState));
     recordVoiceButton.textContent = voiceState === "recording"
       ? (automatic ? "Stop & Send" : "Stop") : "Record";
     toolButtons.forEach((button) => {
       button.disabled = requestRunning || voiceBusy;
-      if (automatic && button.dataset.tool === "reset") button.disabled = false;
     });
+    resetSessionButton.disabled = !sessionId || unavailable || requestRunning || (voiceBusy && !automatic);
     ttsLanguage.disabled = voiceBusy;
-    voicePreset.disabled = locked || requestRunning || voiceBusy || !voiceModeEnabled;
     voiceModeButton.disabled = requestRunning || (voiceBusy && !automatic);
     cancelVoiceTurnButton.disabled = !automatic;
     const messages = conversations.get(currentConversationSession) || [];
     conversationOutput.querySelectorAll(".tts-play-button").forEach((button) => {
       const message = messages.find((item) => String(item.id) === button.dataset.messageId);
-      button.disabled = automatic || !message || ttsTextLength(message.content) > TTS_MAX_CODE_POINTS;
+      button.disabled = unavailable || automatic || !message || ttsTextLength(message.content) > TTS_MAX_CODE_POINTS;
     });
     refreshHealthButton.disabled = automatic;
     if (blocked && !automatic && !requestRunning) {
@@ -891,6 +1133,7 @@ document.addEventListener("DOMContentLoaded", () => {
       appendLog("SUCCESS", "POST /chat", formatChatMetrics(
         result, (performance.now() - startedAt) / 1000, parseServerTiming(chatRequest.response),
       ));
+      refreshSessionList().catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
       return result;
     } finally {
       if (chatGuard.reason(sessionId) === "chat_state_uncertain") {
@@ -903,11 +1146,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const resetCurrentSession = async () => {
     if (requestRunning) return;
     const sessionId = sessionInput.value.trim();
+    if (deletingSessions.has(sessionId) || deletedSessions.has(sessionId)) return;
     if (!sessionId) return;
     if (!window.confirm(`세션 '${sessionId}'의 대화 기록을 초기화할까요?`)) {
       appendLog("INFO", "POST /sessions/{id}/reset", "사용자가 세션 초기화를 취소했습니다.");
       return;
     }
+    // Invalidate snapshots taken before Reset, only for its target session.
+    sessionResetVersions.set(sessionId, (sessionResetVersions.get(sessionId) || 0) + 1);
     voiceTurns.cancel("Reset approved.");
     if (["requesting", "recording"].includes(voiceState)) stopRecording(true);
     stopTts("Session reset. TTS playback was stopped.");
@@ -923,8 +1169,11 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const result = requireSuccess(packet);
       if (result.session_id !== sessionId || result.status !== "reset") throw new ApiError("Invalid Reset response.");
+      // Also reject snapshots taken while the server Reset was still pending.
+      sessionResetVersions.set(sessionId, (sessionResetVersions.get(sessionId) || 0) + 1);
       conversations.delete(sessionId);
       if (currentConversationSession === sessionId) renderConversation(sessionId);
+      refreshSessionList().catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
       appendLog("SUCCESS", apiLabel, `Session '${result.session_id}' reset complete.`);
     } catch (error) {
       appendLog("ERROR", apiLabel, errorMessage(error));
@@ -935,7 +1184,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const selectTool = (tool) => {
     if (requestRunning) return;
-    selectedTool = tool;
     toolButtons.forEach((button) => {
       const selected = button.dataset.tool === tool;
       button.classList.toggle("is-selected", selected);
@@ -951,8 +1199,8 @@ document.addEventListener("DOMContentLoaded", () => {
     updateInputState();
   };
 
-  const runSelectedTool = async () => {
-    if (selectedTool === "reset") return resetCurrentSession();
+  const runSelectedTool = async (tool = "chat") => {
+    if (tool === "reset") return resetCurrentSession();
     if (requestRunning) return;
     if (isVoiceBusy()) {
       appendLog("ERROR", "SYSTEM", "Wait for microphone recording or transcription to finish.");
@@ -960,25 +1208,26 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const sessionId = sessionInput.value.trim();
     const message = messageInput.value.trim();
+    if (tool === "chat" && (deletingSessions.has(sessionId) || deletedSessions.has(sessionId))) return;
     const locked = lockButton.getAttribute("aria-pressed") === "true";
-    if (selectedTool === "chat" && locked) {
+    if (tool === "chat" && locked) {
       appendLog("ERROR", "POST /chat", "Chat을 실행하려면 Input을 Unlock해 주세요.");
       return;
     }
-    if ((selectedTool === "chat" || selectedTool === "reset") && !sessionId) {
-      appendLog("ERROR", selectedTool === "chat" ? "POST /chat" : "POST /sessions/{id}/reset", "Session ID를 입력해 주세요.");
+    if ((tool === "chat" || tool === "reset") && !sessionId) {
+      appendLog("ERROR", tool === "chat" ? "POST /chat" : "POST /sessions/{id}/reset", "세션이 준비될 때까지 기다려 주세요.");
       return;
     }
-    if (selectedTool === "chat" && !message) {
+    if (tool === "chat" && !message) {
       appendLog("ERROR", "POST /chat", "빈 메시지는 전송할 수 없습니다.");
       return;
     }
-    if (selectedTool === "chat") {
+    if (tool === "chat") {
       try { chatGuard.assertAvailable(sessionId); }
       catch (error) { appendLog("ERROR", "CHAT SESSION", errorMessage(error)); return; }
     }
-    const apiLabel = selectedTool === "health" ? "GET /health" : selectedTool === "chat" ? "POST /chat" : `POST /sessions/${sessionId}/reset`;
-    if (selectedTool === "chat") {
+    const apiLabel = tool === "health" ? "GET /health" : tool === "chat" ? "POST /chat" : `POST /sessions/${sessionId}/reset`;
+    if (tool === "chat") {
       setConversationSession(sessionId);
       appendConversation(sessionId, "user", message);
     }
@@ -986,10 +1235,10 @@ document.addEventListener("DOMContentLoaded", () => {
     setRequestRunning(true);
     try {
       let result;
-      if (selectedTool === "health") {
+      if (tool === "health") {
         result = requireSuccess(await requestJson("/health", { method: "GET" }));
         appendLog("SUCCESS", apiLabel, `Controller: ${result.controller}\nOllama: ${result.ollama_reachable ? "Online" : "Offline"}\nModel: ${result.model}`);
-      } else if (selectedTool === "chat") {
+      } else if (tool === "chat") {
         const responseLanguage = ttsLanguage.value;
         result = await sendChat(sessionId, message, responseLanguage);
         appendConversation(sessionId, "assistant", result.message, responseLanguage);
@@ -1002,18 +1251,9 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const activateTool = async (tool) => {
-    if (tool === "reset") {
-      selectTool(tool);
-      return resetCurrentSession();
-    }
     if (voiceTurns.active) return;
     selectTool(tool);
-    if (tool === "chat") {
-      setConversationSession(sessionInput.value.trim() || "(empty)");
-      if (lockButton.getAttribute("aria-pressed") !== "true") messageInput.focus();
-      return;
-    }
-    await runSelectedTool();
+    await runSelectedTool(tool);
   };
 
   const toggleOllamaServer = async () => {
@@ -1041,6 +1281,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const discardRecording = () => {
     voiceOperationId += 1;
     recordingCancelled = true;
+    if (manualSttController) manualSttController.abort();
+    manualSttController = null;
     clearRecordingTimers();
     const recorder = mediaRecorder;
     mediaRecorder = null;
@@ -1121,12 +1363,6 @@ document.addEventListener("DOMContentLoaded", () => {
     updateInputState();
   });
   cancelVoiceTurnButton.addEventListener("click", () => voiceTurns.cancel("Cancelled by the user."));
-  voicePreset.addEventListener("change", () => {
-    if (!voiceModeEnabled || voiceTurns.active || !["ko", "en"].includes(voicePreset.value)) return;
-    sttLanguage.value = voicePreset.value;
-    ttsLanguage.value = voicePreset.value;
-    appendLog("INFO", "VOICE CONVERSATION", `STT and response language: ${voicePreset.value}.`);
-  });
 
   guideButton.addEventListener("click", () => showView("guide"));
   serverButton.addEventListener("click", () => showView("servers"));
@@ -1166,8 +1402,28 @@ document.addEventListener("DOMContentLoaded", () => {
     voiceTurns.cancel("Session changed.");
     if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
     updateInputState();
-    setConversationSession(sessionInput.value.trim() || "(empty)");
+    setConversationSession(sessionInput.value.trim());
   });
+  newChatButton.addEventListener("click", createNewSession);
+  resetSessionButton.addEventListener("click", resetCurrentSession);
+  sessionListButton.addEventListener("click", async () => {
+    if (!sessionPopup.hidden) { closeSessionPopup(); return; }
+    try {
+      await refreshSessionList();
+      sessionPopup.hidden = false;
+      sessionListButton.setAttribute("aria-expanded", "true");
+      positionSessionPopup();
+    } catch (error) { appendLog("ERROR", "GET /sessions", errorMessage(error)); }
+  });
+  document.addEventListener("click", (event) => {
+    if (!sessionPopup.hidden && !sessionPopup.contains(event.target)
+        && !sessionListButton.contains(event.target)) closeSessionPopup();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !sessionPopup.hidden) closeSessionPopup();
+  });
+  window.addEventListener("resize", positionSessionPopup);
+  window.addEventListener("scroll", () => { if (!sessionPopup.hidden) closeSessionPopup(); }, true);
   messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -1192,12 +1448,13 @@ document.addEventListener("DOMContentLoaded", () => {
       ? "입력 보호가 활성화되어 있습니다. Health와 Reset은 실행할 수 있습니다."
       : "입력 보호가 해제되었습니다. 잠금은 보안 인증 기능이 아닙니다.";
     updateInputState();
-    if (!nextLocked && selectedTool !== "health") sessionInput.focus();
+    if (!nextLocked) messageInput.focus();
   });
 
-  appendLog("READY", "SYSTEM", "Local controller console initialized. Health Check is selected.");
+  appendLog("READY", "SYSTEM", "Local controller console initialized. Unlock D to send Chat; session controls are in E.");
   renderConversation(currentConversationSession);
   updateInputState();
+  initializeSessions();
   window.addEventListener("beforeunload", () => {
     voiceTurns.cancel("Page closed.");
     stopTts("Page closed. TTS playback was stopped.", false);

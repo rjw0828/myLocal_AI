@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import ai_controller
 from app import (MAX_ACTIVE_SESSIONS, MAX_MESSAGE_LENGTH,
-                 MAX_SESSION_ID_LENGTH, RESPONSE_LANGUAGE_PROMPTS, create_app)
+                 MAX_SESSION_ID_LENGTH, RESPONSE_LANGUAGE_PROMPTS,
+                 RESPONSE_LANGUAGE_TURN_INSTRUCTIONS, create_app)
 
 
 def chat_result() -> dict:
@@ -59,7 +60,7 @@ class AppTests(unittest.TestCase):
             css = response.get_data(as_text=True)
             self.assertIn("height: calc(100vh - 28px)", css)
             self.assertIn("grid-template-rows: 64px minmax(0, 1fr)", css)
-            self.assertIn("clamp(230px, 24vh, 280px)", css)
+            self.assertIn("clamp(290px, 32vh, 380px)", css)
         finally:
             response.close()
 
@@ -81,20 +82,27 @@ class AppTests(unittest.TestCase):
 
     def test_tool_console_markup_has_controls_and_locked_defaults(self) -> None:
         page = self.client.get("/").get_data(as_text=True)
-        for value in ('data-tool="health"', 'data-tool="chat"', 'data-tool="reset"',
+        for value in ('data-tool="health"', 'id="reset-session"',
                       'id="clear-output"', 'id="output-log"'):
             self.assertIn(value, page)
+        self.assertNotIn('data-tool="chat"', page)
+        self.assertNotIn('data-tool="reset"', page)
+        footer = page.split('class="session-list-footer"', 1)[1].split('</div>', 1)[0]
+        self.assertIn('id="session-list-button"', footer)
+        self.assertIn('id="reset-session"', footer)
         self.assertNotIn('id="execute-tool"', page)
         self.assertIn('id="console-lock" type="button" aria-pressed="true"', page)
-        self.assertIn('id="session-id" name="session_id" value="default"', page)
+        self.assertIn('id="session-id" name="session_id" type="hidden"', page)
+        self.assertIn('id="new-chat"', page)
+        self.assertIn('id="current-session"', page)
         self.assertIn('id="message" name="message"', page)
-        self.assertIn('maxlength="128"', page)
+        self.assertNotIn('for="session-id"', page)
         self.assertIn('maxlength="10000"', page)
 
     def test_conversation_and_system_log_panels_are_independent(self) -> None:
         page = self.client.get("/").get_data(as_text=True)
         for value in ('id="conversation-output"', 'id="conversation-session"',
-                      'class="session-list-placeholder"', 'id="output-log"',
+                      'id="session-list-button"', 'id="session-popup"', 'id="output-log"',
                       '>Conversation<', '>Status / System Log<', '>Clear Log<'):
             self.assertIn(value, page)
 
@@ -147,6 +155,8 @@ class AppTests(unittest.TestCase):
             self.assertIn(value, page)
         self.assertIn('id="record-voice" type="button" aria-pressed="false" disabled', page)
         self.assertIn('id="stt-language" disabled', page)
+        self.assertNotIn('id="voice-preset"', page)
+        self.assertIn('id="message" name="message" rows="5"', page)
 
     def test_voice_script_uses_browser_recording_contract(self) -> None:
         response = self.client.get("/static/js/main.js")
@@ -205,7 +215,7 @@ class AppTests(unittest.TestCase):
             self.assertIn('.voice-status[data-state="recording"]', css)
             self.assertIn('.voice-status[data-state="transcribing"]', css)
             self.assertIn(".voice-controls { grid-template-columns: 1fr auto auto; }", css)
-            self.assertIn("clamp(230px, 24vh, 280px)", css)
+            self.assertIn("clamp(290px, 32vh, 380px)", css)
             self.assertIn(".tool-panel, .input-panel { padding: 12px; overflow: hidden; }", css)
         finally:
             response.close()
@@ -214,7 +224,7 @@ class AppTests(unittest.TestCase):
         page = self.client.get("/").get_data(as_text=True)
         for value in ('id="tts-language"', '<option value="ko" selected>한국어</option>',
                       '<option value="en">English</option>', 'id="conversation-output"',
-                      'class="session-list-placeholder"', 'id="output-log"'):
+                      'id="session-list-button"', 'id="output-log"'):
             self.assertIn(value, page)
 
         response = self.client.get("/static/css/style.css")
@@ -430,12 +440,49 @@ class AppTests(unittest.TestCase):
         self.assertEqual(set(response.json), {"session_id", "model", "message", "elapsed_seconds", "metrics"})
         messages = self.ask.call_args.args[0]
         self.assertIn("400 Unicode characters", messages[0]["content"])
-        self.assertEqual(messages[-1], {"role": "user", "content": "hello"})
+        self.assertEqual(messages[-1]["role"], "user")
+        self.assertTrue(messages[-1]["content"].startswith("hello\n\n"))
+        self.assertIn(RESPONSE_LANGUAGE_TURN_INSTRUCTIONS["en"], messages[-1]["content"])
         self.chat("voice", "follow up")
         stored = self.ask.call_args.args[0]
         self.assertEqual(stored[0]["content"], RESPONSE_LANGUAGE_PROMPTS["en"])
         self.assertNotIn("400 Unicode characters", str(stored))
+        self.assertEqual(stored[1], {"role": "user", "content": "hello"})
         self.assertEqual(len(stored), 4)
+
+    def test_output_language_is_in_current_prompt_for_both_input_languages(self) -> None:
+        # {{ .Prompt }} imports can omit system roles: the current user prompt
+        # must also carry output requirements, while stored questions stay raw.
+        for voice in (False, True):
+            for input_text in ("한국어 질문", "An English question"):
+                for language in ("ko", "en"):
+                    with self.subTest(voice=voice, input=input_text, language=language):
+                        session = self.client.post("/sessions").json
+                        response = self.client.post("/chat", json={
+                            "session_id": session["session_id"], "message": input_text,
+                            "response_language": language,
+                        }, headers={"X-Local-AI-Response-Style": "voice"} if voice else {})
+                        self.assertEqual(response.status_code, 200)
+                        sent = self.ask.call_args.args[0]
+                        self.assertIn(RESPONSE_LANGUAGE_PROMPTS[language], sent[0]["content"])
+                        self.assertTrue(sent[-1]["content"].startswith(input_text + "\n\n"))
+                        self.assertIn(RESPONSE_LANGUAGE_TURN_INSTRUCTIONS[language], sent[-1]["content"])
+                        self.assertEqual("400 Unicode characters" in sent[-1]["content"], voice)
+                        history = self.client.get(f"/sessions/{session['session_id']}/history").json
+                        self.assertEqual(history["messages"][0], {"role": "user", "content": input_text})
+                        self.assertEqual(history["messages"][1]["language"], language)
+
+    def test_language_change_does_not_replay_old_turn_requirements(self) -> None:
+        for language, text in (("ko", "첫 질문"), ("en", "다음 질문"), ("ko", "Last question")):
+            response = self.client.post("/chat", json={
+                "session_id": "language-history", "message": text,
+                "response_language": language,
+            })
+            self.assertEqual(response.status_code, 200)
+            sent = self.ask.call_args.args[0]
+            self.assertEqual(sum(item["role"] == "system" for item in sent), 1)
+            self.assertIn(RESPONSE_LANGUAGE_TURN_INSTRUCTIONS[language], sent[-1]["content"])
+            self.assertNotIn("[Response requirements]", str(sent[1:-1]))
 
     def test_unknown_voice_style_header_does_not_change_normal_chat(self) -> None:
         self.client.post("/chat", json={"session_id": "a", "message": "hello"},
