@@ -1,5 +1,15 @@
 # Local AI Lab — Base Framework v1.0
 
+## MCP-2 개발 브랜치 추가 기능
+
+Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP-2 Registry/Flask API를 추가했습니다. MCP 전용 DB는 `data/mcp_registry.sqlite3`이며 기존 Session DB와 스키마는 변경하지 않습니다. 로컬 소유자가 승인한 stdio 실행 프로필만 등록하고, 도구별 기본 거부 권한과 인수에 묶인 일회용 승인 토큰으로 수동 호출합니다. 재시작 시 등록·권한만 복원하고 서버는 자동 실행하지 않습니다.
+
+이 브랜치의 Flask 실행 환경에는 `.\.venv\Scripts\python.exe -m pip install -r requirements-mcp.txt`로 MCP 의존성도 설치해야 합니다. 기존 환경에는 MCP-1에서 설치한 SDK 2.3.0을 재사용합니다. MCP 검증은 실제 SDK stdio 테스트와 Mock/임시 SQLite 테스트를 구분하며 Edge UI 검증을 뜻하지 않습니다.
+
+MCP-2 검증 결과: 기존 249개에 41개를 추가하여 총 290개(Python 214, JavaScript 76)가 통과했습니다. 신규 실제 SDK/Flask stdio 통합 5개는 등록·수동 호출, 별도 Python 프로세스의 등록/권한 복원과 자동 실행 없음, Timeout, Stop 및 종료 시 자식 프로세스 정리를 확인합니다. 운영 Session DB는 검증 전후 SHA-256이 동일합니다.
+
+실행 승인 파일, API 경로·요청 형식, Timeout/종료 정책과 테스트 범위는 [MCP-2 API 문서](mcp_manager/API.md)를 따릅니다. Control Console의 MCP UI, Streamable HTTP 및 LLM 자동 Tool Calling은 아직 구현하지 않았으며 STEP 8 전체 완료를 의미하지 않습니다. 기본 Flask 실행 명령과 기존 Session/Voice/Ollama 사용 방법은 아래와 같습니다.
+
 ## 공식 기준 버전
 
 **Base Framework v1.0: 완료.** STEP 5, STEP 6-1~6-4, STEP 7을 완료했으며 사용자가 STEP 7 최종 Edge 실기기 검증 **7/7 통과**를 확인했습니다. 자동 테스트는 최근 실행 기준 **215개 통과**입니다(Python 139, 음성 작업 관리자 19, UI 이벤트 모형 57). 사용자 실기기 확인과 에이전트의 자동 테스트를 구분합니다. 릴리스 태그는 `v1.0.0-base`이며 이후 기능 개발의 기준으로 사용합니다.

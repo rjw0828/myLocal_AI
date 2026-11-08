@@ -310,7 +310,8 @@ class ServerWorker:
                                 self._active = item
                             try:
                                 if item.kind == "tools":
-                                    listed = await client.list_tools()
+                                    listed = (await client.list_tools(cache_mode="refresh") if item.payload
+                                              else await client.list_tools())
                                     result = tuple(ToolInfo(t.name, t.description, deepcopy(t.input_schema))
                                                    for t in listed.tools)
                                 else:

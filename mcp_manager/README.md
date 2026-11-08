@@ -1,6 +1,8 @@
 # MCP-1 Core Runtime
 
-Optional Python core using the official `mcp==2.3.0` SDK. It does not register
+Optional Python core using the official `mcp==2.3.0` SDK. See [MCP-2 API](API.md)
+for the independent Registry and Flask adapter now used by `create_app`.
+The standalone core does not register
 Flask routes, open SQLite, start Ollama, load speech models, or change the console.
 Importing the package starts no thread or process. MCP-0 evidence remains in
 `%TEMP%\LocalAI_MCP0_20261109`.
@@ -79,7 +81,8 @@ operations. Tool argument snapshots must be finite JSON objects up to 64 KiB.
 Server output size is not bounded before SDK decoding in this version.
 
 Call `shutdown()` explicitly in the hosting application's `finally`, or use the
-context manager shown above. There is no Flask lifecycle integration in MCP-1.
+context manager shown above. The MCP-2 Flask entry point also calls this cleanup;
+standalone/custom hosts retain the explicit lifecycle responsibility.
 Shutdown denies new work and requests all server owners to stop. It waits up to
 `stop_timeout` (default 5 seconds) per server for an in-flight operation. Queued
 work is rejected. It then cancels the owner's **AnyIO scope**, not its native

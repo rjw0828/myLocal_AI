@@ -51,6 +51,30 @@ class MCPManager:
         if self._closing or self._closed:
             raise MCPRuntimeError("mcp_manager_closed", "MCP manager is shutting down or closed.")
 
+    def register_server(self, config):
+        """Add an explicitly approved configuration without starting it."""
+        if not isinstance(config, ServerConfig):
+            raise TypeError("config must be a ServerConfig")
+        with self._lock:
+            self._require_open()
+            existing = self._configs.get(config.server_id)
+            if existing is not None and existing != config:
+                raise MCPRuntimeError("mcp_config_conflict", "MCP server configuration is already registered.")
+            self._configs[config.server_id] = config
+
+    def unregister_server(self, server_id):
+        """Only forget a confirmed stopped connection; never imply Stop."""
+        with self._lock:
+            self._require_open()
+            self._config(server_id)
+            worker = self._workers.get(server_id)
+            if worker is not None:
+                if not worker.closed.done() or worker.snapshot().state != ServerState.STOPPED:
+                    raise MCPRuntimeError("mcp_not_ready", "Stop the MCP server before unregistering it.")
+                worker.closed.result()
+                del self._workers[server_id]
+            del self._configs[server_id]
+
     def _wait(self, worker, item, timeout):
         try:
             return deepcopy(item.future.result(timeout=timeout))
@@ -136,8 +160,10 @@ class MCPManager:
             item = worker.enqueue(kind, payload)
         return self._wait(worker, item, wait)
 
-    def list_tools(self, server_id, *, timeout=None):
-        return self._request(server_id, "tools", None, timeout)
+    def list_tools(self, server_id, *, timeout=None, refresh=False):
+        if not isinstance(refresh, bool):
+            raise ValueError("refresh must be a boolean")
+        return self._request(server_id, "tools", refresh, timeout)
 
     def call_tool(self, server_id, name, arguments=None, *, timeout=None):
         if not isinstance(name, str) or not name.strip() or len(name) > 256:

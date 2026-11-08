@@ -67,7 +67,8 @@ class Scenario:
             self.live -= 1
             self.exited.set()
 
-    async def list_tools(self):
+    async def list_tools(self, *, cache_mode="use"):
+        self.last_cache_mode = cache_mode
         return SimpleNamespace(tools=[SimpleNamespace(name="echo", description=None,
                                                      input_schema={"type": "object"})])
 
@@ -130,6 +131,33 @@ class MCPRuntimeTests(unittest.TestCase):
         self.assertEqual(manager.call_timeout, 30)
         self.assertEqual(manager.get_status("one").state, ServerState.STOPPED)
         self.assertEqual(scenarios["one"].starts, 0)
+
+    def test_dynamic_registration_stays_stopped_and_removal_requires_stop(self):
+        manager, scenarios = self.manager()
+        manager.unregister_server("one")
+        manager.register_server(self.config())
+        self.assertEqual(manager.get_status("one").state, ServerState.STOPPED)
+        self.assertEqual(scenarios["one"].starts, 0)
+        manager.start_server("one")
+        with self.assertRaises(MCPRuntimeError):
+            manager.unregister_server("one")
+        manager.stop_server("one")
+        manager.unregister_server("one")
+        with self.assertRaises(MCPRuntimeError):
+            manager.get_status("one")
+
+    def test_conflicting_dynamic_registration_does_not_replace_config(self):
+        manager, _ = self.manager()
+        with self.assertRaises(MCPRuntimeError):
+            manager.register_server(ServerConfig("one", sys.executable, ("different",)))
+        manager.register_server(self.config())
+        manager.start_server("one")
+
+    def test_fresh_tool_discovery_bypasses_cached_descriptor(self):
+        manager, scenarios = self.manager()
+        manager.start_server("one")
+        manager.list_tools("one", refresh=True)
+        self.assertEqual(scenarios["one"].last_cache_mode, "refresh")
 
     def test_unregistered_server_never_starts_a_client(self):
         manager, scenarios = self.manager()

@@ -78,7 +78,8 @@ class SessionDeleting(RuntimeError):
     """The session is being removed after an already running operation."""
 
 
-def create_app(database_path=None) -> Flask:
+def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_configs=None,
+               mcp_runtime_factory=None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
@@ -636,8 +637,16 @@ def create_app(database_path=None) -> Flask:
         app.logger.exception("Unhandled controller error")
         return error_response("internal_error", "내부 처리 오류가 발생했습니다.", 500)
 
+    from mcp_manager.api import install_mcp
+    install_mcp(app, session_database_path=store.path, control_guard=require_local_control_header,
+                database_path=mcp_database_path, approved_configs=mcp_approved_configs,
+                runtime_factory=mcp_runtime_factory)
     return app
 
 
 if __name__ == "__main__":
-    create_app().run(host=HOST, port=PORT, debug=False, use_reloader=False)
+    application = create_app()
+    try:
+        application.run(host=HOST, port=PORT, debug=False, use_reloader=False)
+    finally:
+        application.extensions["mcp_service"].shutdown()
