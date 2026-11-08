@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Barrier, Event
 from unittest.mock import MagicMock, patch
+from sqlite_test_support import isolated_database
 
 import ai_controller
 from app import (MAX_ACTIVE_SESSIONS, MAX_MESSAGE_LENGTH,
@@ -26,6 +27,7 @@ def chat_result() -> dict:
 
 class AppTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.database_path = isolated_database(self)
         self.app = create_app()
         self.client = self.app.test_client()
         self.ask = patch("ai_controller.ask_ollama", return_value=chat_result()).start()
@@ -785,6 +787,9 @@ class AppTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        isolated_database(self)
+
     @patch("flask.Flask.run")
     def test_entry_point_binds_loopback_without_debug(self, run) -> None:
         path = Path(__file__).resolve().parents[1] / "app.py"

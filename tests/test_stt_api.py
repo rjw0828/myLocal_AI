@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from app import MAX_STT_AUDIO_BYTES, create_app
 from voice import stt_service
+from sqlite_test_support import isolated_database
 
 
 def wav_bytes(seconds: float, sample_rate: int = 16_000) -> bytes:
@@ -25,6 +26,7 @@ def wav_bytes(seconds: float, sample_rate: int = 16_000) -> bytes:
 
 class SttApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        isolated_database(self)
         self.app = create_app()
         self.client = self.app.test_client()
 

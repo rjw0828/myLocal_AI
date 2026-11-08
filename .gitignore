@@ -22,3 +22,42 @@ venv/
 # Private local voice test samples
 tests/audio_samples/
 tests/tts_output/
+
+# Private conversations, SQLite sidecars, exports and backups
+data/
+backups/
+*.sqlite3
+*.sqlite3-*
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.bak
+*.backup
+session_exports/
+
+# Local model binaries, recordings, generated speech and caches
+models/
+*.onnx
+*.onnx.json
+*.gguf
+*.ggml
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.wav
+*.m4a
+*.webm
+*.mp3
+*.ogg
+*.opus
+*.flac
+*.pcm
+.cache/
+.ruff_cache/
+.mypy_cache/
+.secrets/
+*.pem
+*.key

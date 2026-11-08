@@ -120,7 +120,10 @@
       </section>
     </div>
   </div>
-  <div id="session-popup" class="session-popup" role="dialog" aria-label="Session List" hidden><div id="session-popup-items" class="session-popup-items"></div></div>
+  <div id="session-popup" class="session-popup" role="dialog" aria-label="Session List" hidden>
+    <div class="session-popup-header"><span>Sessions</span><button id="delete-all-sessions" type="button">Delete All</button></div>
+    <div id="session-popup-items" class="session-popup-items"></div>
+  </div>
   <script src="{{ url_for('static', filename='js/voice-turn.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
 </body>

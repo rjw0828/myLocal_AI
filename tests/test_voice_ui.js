@@ -69,7 +69,7 @@ function packet(data, status = 200) {
     text: async () => JSON.stringify(data), json: async () => data,
   };
 }
-async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [] } = {}) {
+async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [], savedDeleteAll = false } = {}) {
   const root = path.resolve(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
   const nodes = {};
@@ -83,6 +83,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
   }
   nodes["session-id"].value = "";
   nodes["stt-language"].value = "auto"; nodes["tts-language"].value = "ko";
+  nodes["session-popup"].append(nodes["delete-all-sessions"], nodes["session-popup-items"]);
   const tools = [...html.matchAll(/data-tool="([^"]+)"/g)].map((match) => {
     const node = new Element("button"); node.dataset.tool = match[1]; return node;
   });
@@ -93,6 +94,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
   const serverHistories = new Map(emptySessions ? [] : [["default", []]]);
   for (const detail of extraSessions) { serverSessions.push(detail); serverHistories.set(detail.session_id, []); }
   let nextServerNumber = Math.max(0, ...serverSessions.map((item) => item.number)) + 1;
+  let nextServerId = nextServerNumber;
   let microphone = () => Promise.resolve({ getTracks: () => {
     if (!tracks.length) tracks.push({ stopped: 0, stop() { this.stopped += 1; }, addEventListener() {} });
     return tracks;
@@ -117,6 +119,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
   }
   const values = new Map();
   if (savedSelection) values.set("local-ai-selected-session", savedSelection);
+  if (savedDeleteAll) values.set("local-ai-delete-all-uncertain", "true");
   const window = {
     innerWidth: 1280, innerHeight: 800,
     MediaRecorder: Recorder,
@@ -134,9 +137,14 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
     if (url === "/voice/transcribe") return packet({ text: "recognized", language: "ko", elapsed_seconds: .01 });
     if (url === "/chat") return packet({ message: "AI answer", elapsed_seconds: .01, metrics: {} });
     if (url === "/sessions" && options.method === "GET") return packet({ sessions: serverSessions.slice() });
+    if (url === "/sessions" && options.method === "DELETE") {
+      const ids = serverSessions.map((item) => item.session_id);
+      serverSessions.length = 0; serverHistories.clear(); nextServerNumber = 1;
+      return packet({ status: "deleted_all", deleted_count: ids.length, deleted_session_ids: ids });
+    }
     if (url === "/sessions" && options.method === "POST") {
       const number = nextServerNumber++;
-      const detail = { session_id: `new-session-${number}`, number, title: "새 대화" };
+      const detail = { session_id: `new-session-${nextServerId++}`, number, title: "새 대화" };
       serverSessions.push(detail); serverHistories.set(detail.session_id, []);
       return packet(detail, 201);
     }
@@ -203,6 +211,178 @@ const deleteFromList = async (f, id) => {
   assert.ok(item, `missing delete row ${id}`);
   item.querySelector(".session-delete").click(); await flush();
 };
+const deleteAllFromList = async (f) => {
+  if (f.nodes["session-popup"].hidden) await openSessions(f);
+  f.nodes["delete-all-sessions"].click(); await flush();
+};
+const bulkCount = (f) => f.requests.filter((r) => r.url === "/sessions" && r.options.method === "DELETE").length;
+
+test("popup internal scroll, scrollbar click/drag and wheel stay open; external scroll closes", async () => {
+  const f = await fixture(); await openSessions(f);
+  for (const target of [f.nodes["session-popup"], f.nodes["session-popup-items"], f.nodes["session-popup-items"].children[0]]) {
+    f.window.scroll({ target });
+    f.documentEvent("click", { target });
+    f.documentEvent("pointerdown", { target });
+    f.documentEvent("pointermove", { target });
+    f.documentEvent("wheel", { target });
+    assert.equal(f.nodes["session-popup"].hidden, false);
+  }
+  f.window.innerHeight = 180; f.window.innerWidth = 240;
+  f.nodes["session-list-button"].getBoundingClientRect = () => ({ top: 35, left: 210, width: 140 });
+  f.window.resize();
+  assert.ok(parseInt(f.nodes["session-popup"].style.maxHeight, 10) <= 164);
+  assert.ok(parseInt(f.nodes["session-popup-items"].style.maxHeight, 10) < 164);
+  for (const target of [f.nodes.message, f.window]) {
+    if (f.nodes["session-popup"].hidden) await openSessions(f);
+    f.window.scroll({ target });
+    assert.equal(f.nodes["session-popup"].hidden, true);
+  }
+});
+
+test("Delete All confirmation shows count; cancellation changes no session or draft", async () => {
+  const f = await fixture({ extraSessions: [{ session_id: "B", number: 2, title: "B" }] });
+  f.input("message", "keep draft"); f.confirm(false);
+  await deleteAllFromList(f);
+  assert.match(f.confirmations[0], /2개/);
+  assert.equal(bulkCount(f), 0); assert.equal(f.serverSessions.length, 2);
+  assert.equal(f.nodes["session-id"].value, "default"); assert.equal(f.nodes.message.value, "keep draft");
+  assert.equal(f.nodes["new-chat"].disabled, false);
+});
+
+test("Delete All clears E and list, preserves D draft, never creates automatically, and New Chat is Session 1", async () => {
+  const f = await fixture({ extraSessions: [{ session_id: "B", number: 2, title: "B" }] });
+  f.input("message", "keep draft"); await deleteAllFromList(f);
+  assert.equal(bulkCount(f), 1); assert.equal(f.serverSessions.length, 0);
+  assert.equal(f.nodes["session-id"].value, ""); assert.equal(f.nodes.message.value, "keep draft");
+  assert.equal(f.nodes["conversation-output"].querySelectorAll(".tts-play-button").length, 0);
+  assert.equal(f.requests.filter((r) => r.url === "/sessions" && r.options.method === "POST").length, 0);
+  f.nodes["new-chat"].click(); await flush();
+  assert.equal(f.serverSessions[0].number, 1);
+  assert.notEqual(f.serverSessions[0].session_id, "default");
+  assert.match(f.nodes["current-session"].textContent, /Session 1/);
+});
+
+test("known Delete All HTTP failures restore server History and leave individual Delete available", async () => {
+  for (const status of [500, 503]) {
+    const f = await fixture();
+    f.serverHistories.set("default", [{ role: "user", content: "retained" }, { role: "assistant", content: "answer", language: "en" }]);
+    f.handlers["/sessions"] = (options) => options.method === "DELETE"
+      ? packet({ error: { code: "storage_error", message: "failed" } }, status)
+      : packet({ sessions: f.serverSessions.slice() });
+    await deleteAllFromList(f);
+    assert.equal(f.serverSessions.length, 1); assert.equal(f.nodes["session-id"].value, "default");
+    assert.equal(f.nodes["conversation-output"].children.length, 2);
+    assert.equal(f.nodes["new-chat"].disabled, false);
+    assert.equal(f.window.sessionStorage.getItem("local-ai-delete-all-uncertain"), "false");
+    delete f.handlers["/sessions"]; await deleteFromList(f, "default");
+    assert.equal(f.serverSessions.length, 0);
+  }
+});
+
+test("unknown Delete All completion blocks mutation across reload and never retries", async () => {
+  for (const invalidResponse of [false, true]) {
+    const f = await fixture();
+    f.handlers["/sessions"] = (options) => options.method !== "DELETE"
+      ? packet({ sessions: f.serverSessions.slice() })
+      : invalidResponse ? packet({ status: "bad" }) : Promise.reject(new Error("connection lost"));
+    await deleteAllFromList(f);
+    assert.equal(bulkCount(f), 1);
+    assert.equal(f.nodes["new-chat"].disabled, true);
+    assert.equal(f.nodes["reset-session"].disabled, true);
+    assert.equal(f.window.sessionStorage.getItem("local-ai-delete-all-uncertain"), "true");
+    f.nodes["new-chat"].click(); await deleteAllFromList(f);
+    assert.equal(bulkCount(f), 1);
+    const reloaded = await fixture({ savedDeleteAll: true });
+    assert.equal(reloaded.nodes["new-chat"].disabled, true);
+    assert.equal(reloaded.nodes["delete-all-sessions"].disabled, true);
+  }
+});
+
+test("Delete All waits for manual/automatic Chat, ignores late answer and sends no TTS", async () => {
+  for (const automatic of [false, true]) {
+    const f = await fixture(), pending = deferred();
+    f.handlers["/chat"] = () => pending.promise; f.unlock();
+    if (automatic) { f.enable(); await f.recordStop(); }
+    else { f.input("message", "draft"); f.nodes.message.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} }); await flush(); }
+    await deleteAllFromList(f); assert.equal(bulkCount(f), 0);
+    pending.resolve(packet({ message: "late answer", metrics: {} })); await flush();
+    assert.equal(bulkCount(f), 1); assert.equal(f.serverSessions.length, 0);
+    assert.equal(f.nodes["session-id"].value, ""); assert.equal(count(f, "/voice/synthesize"), 0);
+    assert.equal(f.nodes["conversation-output"].children.length, 1);
+  }
+});
+
+test("Delete All cancels recording, manual/automatic STT, synthesis and speaking with resource cleanup", async () => {
+  for (const stage of ["recording", "manual-stt", "auto-stt", "tts", "speaking"]) {
+    const f = await fixture(), pending = deferred();
+    if (stage.includes("stt")) f.handlers["/voice/transcribe"] = () => pending.promise;
+    if (stage === "tts") f.handlers["/voice/synthesize"] = () => pending.promise;
+    f.unlock(); if (stage !== "manual-stt") f.enable();
+    if (stage === "recording") { f.nodes["record-voice"].click(); await flush(); }
+    else await f.recordStop();
+    await deleteAllFromList(f);
+    if (stage.includes("stt")) pending.resolve(packet({ text: "late transcript", language: "ko" }));
+    if (stage === "tts") pending.resolve({ ok: true, status: 200,
+      headers: { get: () => "audio/wav" }, blob: async () => new BlobDouble([wav], { type: "audio/wav" }) });
+    await flush();
+    assert.equal(f.nodes["session-id"].value, ""); assert.equal(f.nodes.message.value, "");
+    assert.ok(f.tracks.every((track) => track.stopped));
+    if (stage === "recording") assert.equal(count(f, "/voice/transcribe"), 0);
+    if (stage.includes("stt")) assert.equal(count(f, "/chat"), 0);
+    assert.equal(f.audios.length, stage === "speaking" ? 1 : 0);
+    if (stage === "speaking") { assert.ok(f.audios[0].paused); assert.equal(f.revoked.length, 1); }
+  }
+});
+
+test("Delete All invalidates History taken before deletion, even after new Session 1 selection", async () => {
+  const f = await fixture({ extraSessions: [{ session_id: "B", number: 2, title: "B" }] }), history = deferred();
+  f.handlers["/sessions/B/history"] = () => history.promise;
+  await chooseSession(f, "B"); await deleteAllFromList(f);
+  f.nodes["new-chat"].click(); await flush();
+  history.resolve(packet({ session_id: "B", number: 2, title: "stale", messages: [{ role: "assistant", content: "stale", language: "en" }] }));
+  await flush();
+  assert.notEqual(f.nodes["session-id"].value, "B"); assert.match(f.nodes["current-session"].textContent, /Session 1/);
+  assert.equal(f.nodes["conversation-output"].querySelectorAll(".tts-play-button").length, 0);
+});
+
+test("Delete All waits for Reset and blocks duplicate bulk/Create while server response is pending", async () => {
+  const f = await fixture(), reset = deferred(), bulk = deferred();
+  f.handlers["/sessions/default/reset"] = () => reset.promise;
+  f.handlers["/sessions"] = (options) => options.method === "DELETE" ? bulk.promise : packet({ sessions: f.serverSessions.slice() });
+  f.nodes["reset-session"].click(); await flush(); await deleteAllFromList(f);
+  assert.equal(bulkCount(f), 0);
+  reset.resolve(packet({ session_id: "default", status: "reset" })); await flush();
+  assert.equal(bulkCount(f), 1);
+  f.nodes["delete-all-sessions"].click(); f.nodes["new-chat"].click(); await flush();
+  assert.equal(bulkCount(f), 1);
+  assert.equal(f.requests.filter((r) => r.url === "/sessions" && r.options.method === "POST").length, 0);
+  f.serverSessions.length = 0;
+  bulk.resolve(packet({ status: "deleted_all", deleted_count: 1, deleted_session_ids: ["default"] })); await flush();
+  assert.equal(f.nodes["session-id"].value, "");
+});
+
+test("uncertain existing Chat prevents Delete All request without weakening its session block", async () => {
+  const f = await fixture(); f.unlock();
+  f.handlers["/chat"] = () => Promise.reject(new Error("unknown completion"));
+  f.input("message", "draft"); f.nodes.message.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} }); await flush();
+  await deleteAllFromList(f);
+  assert.equal(bulkCount(f), 0); assert.equal(f.serverSessions.length, 1);
+  assert.equal(f.nodes["record-voice"].disabled, true);
+});
+
+test("cancelled Delete All preview does not discard an in-flight successful Chat", async () => {
+  const f = await fixture(), chat = deferred(), preview = deferred(); f.unlock(); f.confirm(false);
+  f.handlers["/chat"] = () => chat.promise;
+  f.input("message", "question"); f.nodes.message.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} }); await flush();
+  await openSessions(f);
+  let previewRequested = false;
+  f.handlers["/sessions"] = () => { previewRequested = true; return preview.promise; };
+  f.nodes["delete-all-sessions"].click(); await flush(); assert.equal(previewRequested, true);
+  chat.resolve(packet({ message: "keep successful answer", metrics: {} })); await flush();
+  assert.equal(f.nodes["conversation-output"].children.length, 2);
+  preview.resolve(packet({ sessions: f.serverSessions.slice() })); await flush();
+  assert.equal(bulkCount(f), 0); assert.equal(f.nodes["conversation-output"].children.length, 2);
+});
 
 test("Delete selects next then previous, leaves last empty, and preserves draft", async () => {
   const f = await fixture({ extraSessions: [

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from app import MAX_TTS_TEXT_LENGTH, create_app
 from voice import tts_service
+from sqlite_test_support import isolated_database
 
 
 def wav_bytes(frames: int = 2205) -> bytes:
@@ -28,6 +29,7 @@ def synthesis(language: str = "ko") -> tts_service.Synthesis:
 
 class TtsApiTests(unittest.TestCase):
     def setUp(self) -> None:
+        isolated_database(self)
         self.app = create_app()
         self.client = self.app.test_client()
 

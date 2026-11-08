@@ -1,4 +1,10 @@
-# Local AI Lab — Web Control Console v0.1
+# Local AI Lab — Base Framework v1.0
+
+## 공식 기준 버전
+
+**Base Framework v1.0: 완료.** STEP 5, STEP 6-1~6-4, STEP 7을 완료했으며 사용자가 STEP 7 최종 Edge 실기기 검증 **7/7 통과**를 확인했습니다. 자동 테스트는 최근 실행 기준 **215개 통과**입니다(Python 139, 음성 작업 관리자 19, UI 이벤트 모형 57). 사용자 실기기 확인과 에이전트의 자동 테스트를 구분합니다. 릴리스 태그는 `v1.0.0-base`이며 이후 기능 개발의 기준으로 사용합니다.
+
+미완료/후속: STEP 6-5 음성 품질·성능 심화 검증은 연기 상태입니다. ISSUE-002의 System Prompt 템플릿 구조 개선, STEP 8 MCP·Tool Calling, 검색 기반 장기 기억·모델 선택·주변기기 확장은 별도 계획입니다. SQLite 대화 영구 저장 완료가 이러한 후속 기능의 구현 완료를 뜻하지는 않습니다. 아래 과거 단계별 테스트 수와 당시 미검증 기록은 개발 이력이며, 현재 완료 상태는 이 절과 로드맵을 기준으로 합니다.
 
 Local AI Lab은 개인 Windows PC에서 로컬 AI를 학습·실험하고 제어하기 위한 프로젝트입니다. 이 저장소는 Ollama의 Qwen3.5 9B 모델을 Flask HTTP Controller 및 브라우저 기반 Web Control Console과 연결합니다.
 
@@ -111,7 +117,7 @@ Ollama 서버 종료는 Web UI의 상태 버튼 또는 Windows 프로세스 종�
 
 - 최초 상태는 Locked입니다.
 - Chat은 D를 Unlock하면 바로 입력·실행할 수 있습니다. C의 Health Check를 사용한 뒤에도 Enter는 Chat을 전송합니다.
-- RAM 세션이 없으면 빈 상태를 표시합니다. 첫 접속·마지막 세션 삭제·새로고침에서 세션을 자동 생성하지 않으며, D의 `+ New Chat`을 누르면 서버에서 새 내부 ID와 표시 번호를 받습니다.
+- 저장된 세션이 없으면 빈 상태를 표시합니다. 첫 접속·마지막 세션 삭제·새로고침에서 세션을 자동 생성하지 않으며, D의 `+ New Chat`을 누르면 서버에서 새 내부 ID와 표시 번호를 받습니다.
 - D에는 `Session N — 첫 질문 일부...`가 표시되고 Session ID는 직접 입력하지 않습니다. 질문 초안은 세션 전환 시 자동으로 덮어쓰지 않습니다.
 - Message 입력 후 `Enter`를 누르면 전송합니다.
 - `Shift+Enter`는 줄바꿈입니다.
@@ -141,14 +147,14 @@ Ollama 서버 종료는 Web UI의 상태 버튼 또는 Windows 프로세스 종�
 
 ### E — Conversation
 
-- 선택된 RAM 세션의 사용자 메시지와 AI 답변을 구분하여 표시하고, 새로고침 또는 세션 전환 시 서버 History API로 복원합니다.
+- 선택된 세션의 사용자 메시지와 AI 답변을 구분하여 표시하고, 새로고침·Flask 재시작·세션 전환 시 SQLite를 사용하는 서버 History API로 복원합니다.
 - E 하단 `Session List`를 누르면 위로 펼쳐지는 목록에서 세션을 선택할 수 있습니다. 항목 선택·버튼 재클릭·바깥 클릭·Esc로 닫고, 목록이 많으면 팝업 안에서 스크롤합니다.
 - 바로 옆 `Reset Session`은 확인 후 현재 선택한 세션의 대화·제목을 초기화합니다. UI의 `+ New Chat`으로 만든 세션은 번호와 목록 항목을 유지합니다. Locked 상태에서도 사용할 수 있으며, Reset 취소·진행 중 Chat 대기·늦은 History 무효화 정책을 유지합니다.
 - Session List 각 항목의 `Delete`는 대상 번호·제목 확인 후 세션 자체와 History를 삭제합니다. Delete 클릭은 세션 선택으로 전달되지 않습니다. 현재 세션 삭제 시 다음 항목을 우선 선택하고 없으면 이전 항목을 선택합니다. 마지막 항목 삭제 후에는 빈 상태이며 `+ New Chat`으로만 새로 시작합니다. D의 작성 중인 문장은 유지합니다.
 - 각 AI 답변의 `Play`를 누르면 `/voice/synthesize`로 로컬 음성을 합성해 재생합니다. 자동 재생은 하지 않습니다.
 - `AI Language`는 다음 Chat 답변과 해당 답변의 TTS 언어를 선택합니다. 한국어가 기본이며 English를 선택한 뒤 새 질문을 보내면 영어 답변을 요청합니다.
 - 기존 답변은 생성 당시 언어로 재생됩니다. 설정을 바꾸는 것만으로 기존 답변이 번역되지는 않습니다.
-- D의 Voice와 관계없이 AI Language가 새 답변의 텍스트와 TTS 언어를 결정합니다. 서버는 시스템 지시와 현재 질문에 출력 언어를 명시하며, 요청 전용 지시는 RAM History의 사용자 질문에 저장하지 않습니다.
+- D의 Voice와 관계없이 AI Language가 새 답변의 텍스트와 TTS 언어를 결정합니다. 서버는 시스템 지시와 현재 질문에 출력 언어를 명시하며, 요청 전용 지시는 History의 사용자 질문에 저장하지 않습니다.
 - 합성 또는 재생 중에는 버튼이 `Stop`으로 바뀌며, 다른 답변 재생·세션 전환·화면 전환·Lock 시 기존 재생을 정리합니다.
 - 한국어 Piper는 초기 권장값 `length_scale=1.15`를 사용하고, 재생 시작 손실을 줄이기 위해 WAV 앞에 약 250ms PCM 무음을 추가합니다.
 - 서버 정책과 맞춘 Unicode code point 기준 500자 이하 답변만 재생하며 긴 답변을 임의로 자르지 않습니다.
@@ -287,13 +293,13 @@ Invoke-WebRequest -Method Post `
 
 오류 응답 코드는 `text_missing`, `text_empty`, `invalid_tts_text`, `text_too_long`, `invalid_tts_language`, `unsupported_media_type`, `tts_busy`, `tts_model_missing`, `tts_initialization_failed`, `tts_inference_failed`입니다.
 
-### RAM Session API
+### Session API (SQLite)
 
-`GET /sessions`는 현재 프로세스의 세션 목록을 `{"sessions":[{"session_id":"...","number":1,"title":"새 대화"}]}` 형식으로 반환하며 조회만으로 세션을 만들지 않습니다. 번호는 프로세스 안에서 증가하며 중복되지 않습니다.
+`GET /sessions`는 DB의 세션 목록을 `{"sessions":[{"session_id":"...","number":1,"title":"새 대화"}]}` 형식으로 반환하며 조회만으로 세션을 만들지 않습니다. 번호는 개별 삭제·재시작 후에도 증가합니다. 성공한 Delete All만 다음 번호를 1로 초기화합니다.
 
-`POST /sessions`는 본문 없이 새 RAM 세션을 만들고 HTTP 201과 `{"session_id":"s-...","number":2,"title":"새 대화"}`를 반환합니다. 내부 ID는 UUID 기반이며 화면에는 표시 번호와 제목을 사용합니다. 60개 한도에서는 HTTP 429 `session_limit_reached`를 반환합니다.
+`POST /sessions`는 본문 없이 DB에 새 세션을 만들고 commit 후 HTTP 201과 `{"session_id":"s-...","number":2,"title":"새 대화"}`를 반환합니다. 내부 ID는 UUID 기반이며 화면에는 표시 번호와 제목을 사용합니다. 영구 보관 세션 60개 한도에서는 HTTP 429 `session_limit_reached`를 반환합니다. Delete로 슬롯을 회복하며 재시작으로 한도가 초기화되지 않습니다.
 
-`GET /sessions/<session_id>/history`는 `session_id`, `number`, `title`, `messages`를 반환합니다. `messages`에는 `role`(user/assistant), `content`, AI 답변의 `language`(ko/en 또는 null)가 포함됩니다. 없는 세션은 HTTP 404 `session_not_found`입니다. 첫 번째 **성공한** 질문의 앞 40자를 제목으로 사용하고 길면 `...`을 붙입니다. Reset 후에는 제목이 `새 대화`로 돌아가며 다음 성공한 질문으로 다시 정해집니다. 세션 목록과 기록은 Flask 재시작 시 사라집니다.
+`GET /sessions/<session_id>/history`는 `session_id`, `number`, `title`, `messages`를 반환합니다. `messages`에는 `role`(user/assistant), `content`, AI 답변의 `language`(ko/en 또는 null)가 포함됩니다. 없는 세션은 HTTP 404 `session_not_found`입니다. 첫 번째 **성공한** 질문의 앞 40자를 제목으로 사용하고 길면 `...`을 붙입니다. Reset 후에는 제목이 `새 대화`로 돌아가며 다음 성공한 질문으로 다시 정해집니다. 세션 번호·제목·History·답변 언어와 실제 시스템 언어 지시는 Flask 재시작 후에도 복원됩니다.
 
 기존 외부 클라이언트의 `/chat`은 전달된 임의의 유효한 `session_id`로 계속 동작합니다. 이 방식으로 생성된 기존 호환 세션도 목록에 번호가 붙으며, Reset 후 빈 상태가 되면 기존처럼 제거됩니다. `+ New Chat`으로 만든 세션은 Reset해도 빈 항목으로 남아 번호를 유지합니다.
 
@@ -306,13 +312,31 @@ Invoke-WebRequest -Method Post `
 - 이미 삭제된 ID의 Chat/History/Reset: HTTP 410 `session_deleted`. 알 수 없는 일반 ID의 기존 Chat 생성/Reset 정책은 유지합니다.
 - 이미 실행 중인 Chat은 세션 Lock 안에서 완료한 뒤 Delete가 기록을 지웁니다. 대기 중이거나 새로 도착한 같은 세션 작업은 거부합니다. 다른 세션에는 영향을 주지 않습니다.
 
-삭제된 ID만 RAM 표식으로 남겨 늦은 `/chat`이 같은 ID로 세션을 다시 만들지 못하게 합니다. History·제목·Lock 객체를 유지하는 것은 아닙니다. 표식은 활성 60개 한도에 포함하지 않으며 Flask 재시작 시 사라집니다. 표식 수는 프로세스 동안 삭제 횟수에 따라 증가하는 현재 제한이 있습니다.
+삭제된 ID와 삭제 시각은 DB의 `deleted_sessions`에 남겨 늦은 `/chat`이 재시작 후에도 같은 ID로 세션을 다시 만들지 못하게 합니다. 제목·본문·언어는 남기지 않습니다. 표식은 60개 한도에 포함하지 않으며 삭제 횟수에 따라 누적됩니다. WAL·백업의 과거 데이터까지 완전 소거하는 기능은 아닙니다.
 
 브라우저는 삭제 성공 전 캐시를 지우지 않습니다. 현재 세션의 마이크/STT/TTS·자동 음성 턴을 취소하고 관찰 중 Chat이 끝난 뒤 DELETE를 전송합니다. 서버 완료 여부가 불확실한 Chat/Reset/Delete에는 DELETE도 자동 재시도하지 않습니다. HTTP 오류는 기록 후 최신 목록·허용되는 History로 재확인하고, 404/410은 이미 없는 항목으로 화면을 정리합니다. 통신 단절로 서버가 실제 삭제했는지 모르는 경우에는 불확실 상태를 안내하며 해당 ID를 차단합니다. 새 세션을 자동 생성하거나 보호 상태를 시간 경과로 해제하지 않습니다.
 
+### `DELETE /sessions` — Delete All
+
+Session List 팝업 상단의 `Delete All`에서 현재 목록의 개수를 조회해 확인창으로 안내합니다. 취소하면 삭제 요청을 보내지 않고 기존 대화·D 초안을 유지합니다. 확인하면 녹음/STT/TTS/Voice Conversation을 취소하고 관찰 중인 Chat/Reset 완료를 기다린 후 본문 없이 `DELETE /sessions`를 한 번 보냅니다. 완료 불확실 Chat이 있으면 전송을 차단합니다.
+
+성공은 HTTP 200과 다음 JSON입니다.
+
+```json
+{"status":"deleted_all","deleted_count":2,"deleted_session_ids":["s-...","s-..."]}
+```
+
+서버는 전체 삭제 진행 중 신규 Create/Chat/History/Reset/개별 Delete/중복 Delete All/List를 HTTP 409 `session_deleting`으로 거부합니다. 이미 세션 Lock을 잡은 Chat/Reset/History가 끝난 뒤 모든 세션의 Lock을 확보하고, 짧은 SQLite 트랜잭션에서 (1) 현재 ID의 tombstone 추가 (2) 모든 세션과 cascade History 삭제 (3) `sqlite_sequence`의 sessions 카운터 초기화를 함께 commit합니다. 기존 tombstone은 지우지 않습니다. 실패 시 세 단계 모두 rollback하며 기존 세션을 RAM으로만 삭제하지 않습니다.
+
+성공 후 E와 Session List는 빈 상태이며 새 세션을 자동 생성하지 않습니다. D 초안은 유지합니다. 사용자가 다음 `+ New Chat`을 누르면 새로운 UUID와 Session 1이 생성됩니다. 이 초기화는 DB 재시작 후에도 유지됩니다. 개별 Delete/Reset/일반 재시작은 번호를 초기화하지 않습니다. 세션이 이미 0개여도 Delete All 성공은 카운터를 초기화합니다.
+
+클라이언트는 삭제 승인·완료 경계에서 History/목록/세션 버전을 무효화해 늦은 응답을 버립니다. HTTP 오류가 확인되면 F에 표시하고 DB 목록/History를 다시 조회합니다. 네트워크·파싱·성공 응답 검증 실패로 Delete All 완료를 모르면 빈 화면으로 성공 처리하지 않고 전체 세션 변경을 차단합니다. 이 차단은 같은 탭의 sessionStorage에 남아 새로고침 뒤에도 유지되며 시간 경과·Health·History 조회로 해제하지 않습니다. 재동기화 도구/자동 재시도는 추가하지 않았으므로 이 경우 서버 상태를 별도로 검증해야 합니다. 클라이언트 취소가 서버의 이미 시작된 모델 추론을 즉시 멈추거나 되돌리지는 않습니다.
+
+확인창의 개수는 조회 시점 기준입니다. 다른 탭/클라이언트가 그 사이 세션을 만들면 실제 삭제 개수는 응답의 `deleted_count`를 기준으로 합니다. Delete All은 요청 처리 시점의 모든 세션에 적용됩니다. 여러 탭 사용 시 먼저 작업을 멈추고 필요한 DB 백업을 보관하세요. 백업·WAL까지 완전 소거하는 기능은 아닙니다.
+
 ### `POST /sessions/<session_id>/reset`
 
-지정 Session ID의 RAM 대화 기록을 초기화합니다. 요청 본문은 없습니다. 다른 세션의 기록은 변경하지 않습니다.
+지정 Session ID의 DB 대화 기록·제목·언어 정보를 원자적으로 초기화합니다. 요청 본문은 없습니다. 다른 세션의 기록은 변경하지 않습니다. UI에서 생성한 세션은 ID와 번호를 유지합니다.
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/sessions/default/reset"
@@ -327,7 +351,7 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/sessions/default/rese
 }
 ```
 
-존재하지 않는 세션도 같은 응답을 반환하지만 새로운 RAM 세션 객체는 만들지 않습니다.
+존재하지 않는 일반 ID도 같은 응답을 반환하지만 새 세션을 만들지 않습니다. 삭제 표식이 있는 ID는 HTTP 410입니다.
 
 ### `POST /ollama/start`
 
@@ -371,7 +395,7 @@ Invoke-RestMethod -Method Post `
 
 | 항목 | 제한 |
 |---|---:|
-| 활성 RAM 세션 | 최대 60개 |
+| 영구 보관 세션 | 최대 60개 (삭제 표식 제외) |
 | Session ID | Python `len()` 기준 최대 128자 |
 | Message | Python `len()` 기준 최대 10,000자 |
 | TTS Text | Python `len()` 기준 최대 500자 |
@@ -379,12 +403,12 @@ Invoke-RestMethod -Method Post `
 | Ollama 생성 요청 제한 시간 | 180초 |
 | 브라우저 요청 제한 시간 | 190초 |
 
-- 대화 기록은 현재 Flask 프로세스 RAM에만 저장됩니다.
-- Flask를 종료하거나 재시작하면 모든 대화 기록이 사라집니다.
-- Reset된 비활성 세션은 RAM 활성 세션 슬롯에서 제거될 수 있습니다.
+- 대화 기록은 로컬 SQLite에 저장되며 Flask 재시작 후 복원됩니다. DB는 암호화되지 않은 평문 개인 데이터입니다.
+- DB 기본 경로는 `data/local_ai_lab.sqlite3`입니다. `LOCAL_AI_DB_PATH`로 별도 로컬 경로를 지정할 수 있습니다.
+- UI 생성 세션의 Reset은 슬롯을 유지하며 Delete는 슬롯을 회복합니다. 기존 호환용 암묵 생성 세션의 Reset/실패 시 빈 세션 정리는 유지합니다.
 - 활성 세션 수는 제한되지만 세션별 대화 메시지 수는 제한되지 않습니다.
 - 대화 기록 길이와 모델 컨텍스트 길이는 다릅니다. RAM에 기록이 남아 있어도 모델의 컨텍스트 한도를 초과하면 전체 대화를 정확히 해석하지 못할 수 있습니다.
-- 자동 요약, 오래된 기록 절단 및 SQLite 영구 저장은 v0.1에 포함되지 않습니다.
+- 자동 요약·오래된 기록 절단·검색 기반 장기 기억은 아직 포함되지 않습니다. SQLite 저장 자체가 모델 컨텍스트나 의미 기억을 확장하지는 않습니다.
 - Thinking은 항상 OFF입니다.
 
 ## 테스트
@@ -399,7 +423,7 @@ cd F:\LLM\AI_Project\myLocalAI
 ### Python 문법 검사
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app.py ai_controller.py ollama_runtime.py voice\stt_service.py voice\tts_service.py
+.\.venv\Scripts\python.exe -m py_compile app.py ai_controller.py ollama_runtime.py voice\stt_service.py voice\tts_service.py storage\sqlite_store.py
 ```
 
 ### JavaScript 문법 검사
@@ -423,7 +447,7 @@ STEP 6-4-B 수동 Edge 검증 순서:
 6. D의 `+ New Chat`으로 A와 B를 만들고 E의 `Session List`에서 A→B→A를 선택합니다. 화면 이동 뒤에도 늦은 응답이 다른 세션에 적용되지 않는지 확인합니다. Thinking 중 Reset 확인 취소는 작업을 유지하고, 승인은 Chat 완료 후 해당 세션 Reset을 실행해야 합니다.
 7. D 초안 보호, 긴 답변의 전문 보존/음성 생략, TTS 오류 후 수동 Play, 재생 거부 안내, 작은 창에서 Cancel/Lock 접근성을 확인합니다.
 
-실제 STEP 6-4-B 마이크/Edge/스피커 전체 흐름은 사용자 실기기 확인이 필요합니다. 자동 검증 결과와 구분해 기록합니다.
+당시 STEP 6-4-B 마이크/Edge/스피커 전체 흐름은 사용자 실기기 확인 대상으로 남겼습니다. 이후 사용자 안정화 완료 및 STEP 7 최종 Edge 7/7 통과로 Base Framework v1.0을 확정했으며, 자동 검증과 사용자 실기기 보고를 구분합니다.
 
 AI Language 수동 검증: 새 세션과 기존 세션 각각에서 한국어→English, 영어→한국어, 한국어→한국어, 영어→English 네 조합을 확인합니다. 각 조합을 텍스트 입력, OFF의 Record→Stop→Enter, ON의 Record→Stop & Send로 실행합니다. E의 새 답변 텍스트와 Play/자동 재생 언어가 E 설정을 따라야 하며, D Voice는 인식 언어만 정해야 합니다. ON은 턴 시작 시 선택값을 고정하며 처리 중 변경이 막혀야 합니다. Session List 왕복·새로고침 후 History에는 언어 지시가 붙지 않은 질문 원문이 남고, AI 답변은 생성 당시 언어로 재생되어야 합니다.
 
@@ -466,7 +490,7 @@ Python 단위 테스트는 Ollama 통신과 프로세스 제어를 Mock으로 �
 
 추가 자동 검증: 서버 History·제목·번호·언어 메타데이터 독립성과 성공/실패 Chat→Reset 순서 3개, JS 오래된 History/다른 세션/확인 취소/실패/음성 단계 경합 7개를 추가했다. Python 104개 + 작업 관리자 19개 + 브라우저 API 모형 35개로 총 158개가 통과했다. 서버 검증은 실제 Flask RAM 저장소와 Lock을 실행하고 Qwen 호출만 Mock으로 대체한다. JS는 실제 main.js를 API/DOM/Audio 모형으로 실행한다. 실제 Edge·마이크·스피커, 실모델 통합 검증으로 간주하지 않는다.
 
-Edge 확인은 새 검증용 세션만 사용한다. 서버 재시작 시 RAM 세션이 사라지는 기존 정책을 고려해 기존 기록이 필요하면 먼저 보존한다.
+이 절의 RAM 소멸 설명은 STEP 5 당시 기록이다. STEP 7 이후에는 아래 SQLite 재시작 절차를 사용하며 기존 RAM 전용 프로세스의 기록은 자동 이전되지 않는다.
 
 1. Flask 실행 후 Edge에서 Ctrl+F5를 누르고 D의 `+ New Chat`으로 A/B를 만든다. A에는 `A 표식: 사과`, B에는 `B 표식: 바나나`를 질문하고 번호와 제목을 기록한다.
 2. A Reset 확인을 취소하면 대화와 제목이 그대로인지 확인한다. 다시 승인하면 A만 비워지고 번호 유지·제목 `새 대화`가 되는지 확인한다. B를 선택해 질문·답변·제목·번호·AI 답변 재생 언어가 그대로인지 확인한다.
@@ -493,7 +517,7 @@ Session UI 정리: C에는 Health Check를 유지하고 Chat/Reset 항목을 제
 ### 실제 관찰된 이슈
 
 - **ISSUE-001 — 종료:** 오래된 History가 Reset 뒤 화면과 제목을 되살리는 클라이언트 결함을 수정했고 서버 세션 독립성을 자동 검증했습니다. 사용자가 STEP 5-6-5의 실제 Edge 검증 완료와 종료를 확인했습니다. 서버가 다른 세션 기록을 삭제하는 결함은 재현되지 않았습니다.
-- **ISSUE-002 — Qwen3.5 9B 문맥 해석:** 이전 메시지 배열이 정상 전달돼도 모델이 과거 문맥을 부정확하게 해석하는 사례가 관찰됐습니다. 이는 기록 전달과 모델의 의미 해석이 서로 다른 문제이므로 추가 관찰이 필요합니다.
+- **ISSUE-002 — 기능 검증 통과 / 구조 개선 후속:** 사용자가 기능 테스트 5개 통과를 확인했습니다. System Prompt/`{{ .Prompt }}` 템플릿 구조 개선은 후속 과제로 유지합니다.
 
 ### 코드 구조상 잠재 위험 및 현재 제한
 
@@ -521,22 +545,101 @@ Session UI 정리: C에는 Health Check를 유지하고 Chat/Reset 항목을 제
 ## 로드맵
 
 - **STEP 5-6-2 — E/F 패널 분리:** 완료
-- **STEP 5-6-3/4 — Session List / History / Create API 및 D/E 세션 전환:** 구현 완료, Edge 수동 확인 대기
+- **STEP 5-6-3/4 — Session List / History / Create API 및 D/E 세션 전환:** 완료, 사용자 안정화 완료 보고
 - **STEP 5-6-5 — Reset 독립성·비동기 검증:** 완료, 사용자 Edge 검증 확인으로 ISSUE-001 종료
 - **STEP 6-1 — 음성 AI 환경 분석:** 완료
-- **STEP 6-2 — 로컬 STT:** faster-whisper CPU INT8 기반 Push-to-Talk 음성 인식
+- **STEP 6-2 — 로컬 STT:** 완료, faster-whisper CPU INT8 기반 Push-to-Talk 음성 인식
 - **STEP 6-3-A~E — 로컬 TTS 환경·독립 합성·Flask API·수동 재생·음질/지연 계측:** 완료
 - **STEP 6-4 — 음성 통합:** STT → 기존 `/chat` → Qwen3.5 9B → TTS
-- **STEP 6-4-A/B — 음성 대화 설계·구현:** 완료 — 기본 OFF, 한 턴 순차 실행·취소·불확실 세션 차단. 실제 Edge 음성 턴 확인 대기
-- **STEP 6-5 — 음성 품질 및 성능 검증:** 인식·합성 품질, 지연시간과 시스템 자원 측정
-- **STEP 7 — SQLite 장기 기억:** 대화 영구 저장 및 세션 복원
-- **STEP 8 — LLM Tool Calling:** allowlist와 입력 검증을 적용한 전문 도구 연동
-- **이후:** 장기 기억 검색, 대화 요약, 페르소나, Bluetooth·게임패드·휴대전화 등 주변기기 연동
+- **STEP 6-4-A/B — 음성 대화 설계·구현:** 완료 — 기본 OFF, 한 턴 순차 실행·취소·불확실 세션 차단 및 사용자 안정화 완료 보고
+- **STEP 7 — SQLite 세션·대화 영구 저장:** 완료. 팝업 스크롤/Delete All을 포함한 최종 사용자 Edge 검증 7/7 통과
+- **STEP 8 — MCP·LLM Tool Calling·전문 도구 연동:** 후속 개발, 미구현. allowlist와 입력 검증 기반으로 별도 설계
+- **STEP 6-5 — 음성 품질·성능 심화 검증:** 미완료 / 연기. STEP 7·8 이후 진행하며 두 단계의 필수 선행 조건에서 제외
+- **이후:** 장기 기억 검색, 대화 요약, 모델 선택, 페르소나, Bluetooth·게임패드·휴대전화 등 주변기기 연동은 별도 계획
 
-개발 순서를 변경한 이유는 SQLite 장기 기억보다 로컬 음성 대화의 기본 동작을 먼저 검증하기 위해서입니다. 기존 Flask 및 Qwen3.5 9B 구조를 재사용하고 STT/TTS는 독립 모듈로 구성합니다. 추가 비용 0원과 로컬 실행 원칙을 유지하며, 음성 기능이 실패해도 기존 텍스트 Chat은 정상 동작해야 합니다.
+기본 음성 동작을 확인했으므로 실행 순서를 STEP 5 완료→STEP 6-1~6-4 완료→STEP 7→STEP 8→STEP 6-5→장기 기억 검색·페르소나·주변기기로 조정했습니다. STEP 번호와 미완료 측정 항목은 유지하고 플랫폼 구축을 먼저 진행합니다. 기존 Flask 및 Qwen3.5 9B와 독립 STT/TTS 구조, 추가 비용 0원과 로컬 실행 원칙을 유지합니다.
 
-ISSUE-001의 SQLite 도입 전 검증 조건은 사용자 Edge 검증 완료로 충족했습니다. ISSUE-002의 Qwen 문맥 해석 부정확 문제는 별도 품질 개선 항목으로 유지합니다. 후속 기능 구현은 별도 승인을 받습니다.
+ISSUE-001의 SQLite 도입 전 검증 조건은 충족했습니다. ISSUE-002는 사용자 기능 테스트 5개 통과 상태이며 템플릿 구조 개선은 별도 후속 과제입니다. STEP 7은 아래 정책으로 구현했으며 STEP 8은 별도 승인 후 진행합니다.
 
-## v0.1 상태
+## STEP 7 — 영구 저장·장애 처리·백업
 
-Web Control Console v0.1은 로컬 Ollama 상태 확인, Chat, Session Reset, 입력 잠금, 응답 성능 출력, 제한된 Ollama 프로세스 제어 및 기본 안정성 검증을 완료한 상태입니다. 장기 기억과 자동 Tool Calling은 포함되지 않습니다.
+표준 `sqlite3`만 사용하며 추가 설치는 없습니다. `sessions`, `messages`, `deleted_sessions` 테이블과 `PRAGMA user_version=1`을 사용합니다. WAL, `synchronous=FULL`, foreign keys 및 최대 3초 busy timeout을 적용합니다. 단일 Flask 프로세스를 지원하며 동일 DB를 여러 Controller 프로세스에서 동시에 사용하는 구성은 지원하지 않습니다.
+
+서버 시작 시 메타데이터와 Lock만 복원합니다. 전체 History를 한꺼번에 RAM에 읽지 않고 필요한 작업에서 읽은 뒤 마지막 요청 종료 시 해제합니다. Ollama 추론 동안 DB 트랜잭션을 유지하지 않으며 성공한 질문·답변·제목·언어·시스템 지시와 revision을 단일 트랜잭션으로 확정합니다. Chat/Reset/Delete는 기존 세션 Lock 순서를 유지하고 저장 revision으로 늦은 쓰기도 거부합니다. 기존 브라우저 Reset 버전·세션 세대·불확실 Chat 차단은 변경하지 않았습니다.
+
+실행 중 DB busy는 HTTP 503 `storage_busy`, 읽기 전용·용량·IO·접근 오류는 503 `storage_unavailable`, 기타 SQL/저장 오류는 500 `storage_error`, 오래된 revision은 409 `session_conflict`입니다. 오류 JSON은 기존 `{error:{code,message}}` 구조입니다. 조용한 RAM 폴백, 성공으로 위장한 응답, 모델 자동 재시도는 없습니다. 시작 시 손상·지원하지 않는 스키마는 시작을 중단하고 원본을 덮어쓰지 않습니다. `/health`는 기존 Flask/Ollama 상태 계약을 유지하며 DB 무결성 검사 API가 아닙니다.
+
+STEP 7 착수 당시 RAM 보존 확인에서는 `127.0.0.1:5000/sessions`에 연결되지 않았고 운영 DB도 없었습니다. 당시 서버 재시작·내보내기·이전·사용자 세션 변경은 수행하지 않았습니다. 이후 사용자가 Edge에서 SQLite 실제 동작을 확인했습니다. 이전 RAM 전용 서버에 보존할 기록이 따로 있다면 **종료 전에** 작업을 멈추고 List/History snapshot 보존 범위를 먼저 협의해야 합니다. 새 프로세스는 이미 종료된 프로세스의 RAM을 복구하지 못합니다.
+
+### 수동 백업 (프로젝트 루트 PowerShell)
+
+기본 DB 또는 `LOCAL_AI_DB_PATH`가 가리키는 기존 DB에서 SQLite backup API로 일관된 snapshot을 만듭니다. 열린 DB 본체만 단순 복사하지 마세요. 아래 명령은 사용자가 필요할 때 실행하며 이번 구현에서는 운영 백업을 실행하지 않았습니다.
+
+```powershell
+$backupFile = ".\backups\local_ai_lab_$(Get-Date -Format 'yyyyMMdd_HHmmss').sqlite3"
+.\.venv\Scripts\python.exe -c "import os,sys; from pathlib import Path; from storage.sqlite_store import SQLiteStore,DEFAULT_DB_PATH; p=Path(os.environ.get('LOCAL_AI_DB_PATH') or DEFAULT_DB_PATH); assert p.is_file(), 'Existing DB required'; SQLiteStore(p).backup(sys.argv[1])" $backupFile
+```
+
+같은 이름의 백업은 덮어쓰지 않습니다. 백업에도 개인 대화가 포함됩니다. DB·WAL/SHM/journal·`data/`·`backups/`·`session_exports/`는 Git에서 제외합니다. 다른 위치로 수동 복사한 JSON/오디오/백업도 직접 보호해야 합니다.
+
+### 수동 복원
+
+1. 모든 음성·Chat 작업이 끝난 뒤 Flask를 Ctrl+C로 정상 종료합니다. Ollama/GPU 설정은 변경하지 않습니다.
+2. 현재 DB가 있으면 위 명령으로 별도 백업합니다. 원본·sidecar를 임의 삭제하지 않습니다.
+3. 복원할 백업의 무결성을 검사합니다. 출력이 `ok`이고 `user_version`이 `1`이어야 합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -c "import sqlite3,sys; from pathlib import Path; from contextlib import closing; p=Path(sys.argv[1]).resolve(); assert p.is_file(); c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True); print(c.execute('PRAGMA integrity_check').fetchall()); print(c.execute('PRAGMA user_version').fetchone()); c.close()" ".\backups\선택한백업.sqlite3"
+```
+
+4. 백업을 **새 파일명**으로 복사하고 이번 터미널에서 복원 경로를 지정합니다. 기존 운영 DB와 WAL을 섞거나 덮어쓰지 않습니다.
+
+```powershell
+if (Test-Path -LiteralPath ".\data\restored_local_ai_lab.sqlite3") { throw "새 복원 파일명을 지정하세요." }
+Copy-Item -LiteralPath ".\backups\선택한백업.sqlite3" -Destination ".\data\restored_local_ai_lab.sqlite3"
+$env:LOCAL_AI_DB_PATH = (Resolve-Path ".\data\restored_local_ai_lab.sqlite3").Path
+.\.venv\Scripts\python.exe app.py
+```
+
+5. List/History/언어와 삭제 ID를 확인합니다. 이후 실행에도 같은 경로를 사용하세요. 기본 DB로 돌아가려면 Flask 종료 후 `Remove-Item Env:LOCAL_AI_DB_PATH`를 실행합니다. 복원은 백업 시점으로 돌아가므로 백업 이후 생성/삭제한 기록과 표식은 복원되지 않습니다. 기록 완전 소거·암호화·자동 백업/이전은 구현하지 않았습니다.
+
+### 자동 검증과 Edge 수동 검증
+
+기존 174개를 유지하고 SQLite 검증 22개를 추가했습니다. 총 196개(Python 131, 작업 관리자 19, UI 모형 46)가 통과했습니다. Python/JavaScript 문법 검사와 Git 제외 확인도 통과했습니다. Python 저장 테스트는 실제 임시 SQLite 파일·연결·자식 프로세스 재시작/강제 종료를 사용하며 Ollama는 Mock입니다. 실제 DB busy·손상·rollback·백업 복원과 별개로 readonly/full/IO 장애는 예외 주입 테스트입니다. 기존 개인 DB나 실모델을 호출하지 않습니다. JS는 실제 main.js와 작업 관리자를 모형 환경에서 실행하며 Edge DOM/마이크/스피커 검증을 대신하지 않습니다.
+
+Edge에서는 다음을 별도로 확인합니다. 이번 구현에서 직접 실행한 실기기 검증은 아닙니다.
+
+1. `.\.venv\Scripts\python.exe app.py` 실행 후 `+ New Chat`으로 검증용 A/B를 만듭니다. 서로 다른 질문과 AI Language를 사용하고 번호·제목·답변을 기록합니다.
+2. 요청 완료 후 Flask만 Ctrl+C로 종료하고 같은 DB 경로로 다시 실행합니다. Edge 새로고침 후 A/B 목록·번호·제목·History·각 답변 Play 언어가 유지되어야 합니다. 화면의 현재 AI Language 선택 자체는 기존 UI 정책이며 서버가 저장한 각 답변 언어와 구분합니다.
+3. A Reset 후 재시작합니다. A 번호는 유지되고 제목은 `새 대화`, History는 비어 있으며 B는 그대로여야 합니다.
+4. A Delete 후 재시작합니다. A가 복원되면 안 되며 다음 New Chat 번호는 이전 번호를 재사용하지 않아야 합니다. 마지막 삭제 후 새 항목이 자동 생성되면 안 됩니다.
+5. A→B→A, Thinking 중 Cancel/Reset/Delete, 수동 STT/TTS 및 Voice Conversation을 확인합니다. 늦은 응답이 다른 세션·Reset/삭제한 기록을 되살리지 않아야 하며 완료 불확실 세션이 재시작/History 조회만으로 자동 해제되면 안 됩니다.
+
+미완료: 실제 Edge 재시작·음성 회귀, 실물 디스크 장애/전원 차단, STEP 6-5 심화 성능 측정. 세션별 기록·삭제 표식·DB 크기 및 추론 시 전체 문맥 메모리는 계속 증가할 수 있습니다. 기본 DB는 암호화하지 않으며 자동 요약·절단은 수행하지 않습니다.
+
+### STEP 7 후속 — Session List 스크롤 / Delete All 검증
+
+사용자가 기본 SQLite 동작을 Edge에서 확인했습니다. 팝업이 스크롤 시 닫힌 원인은 `window` 캡처 단계의 scroll 핸들러가 팝업 내부의 non-bubbling scroll까지 받아 무조건 닫은 것이었습니다. 이벤트 대상이 팝업 안이면 닫지 않도록 수정했습니다. 기존 바깥 클릭·Esc·버튼 재클릭·외부 패널 스크롤 시 닫기는 유지합니다. 팝업은 body 직하의 fixed/z-index 구조를 유지하며 Delete All 헤더 높이를 제외한 목록만 내부 스크롤합니다.
+
+기존 196개에 Python 8개와 UI 이벤트 모형 11개를 추가했습니다. 전체 215개(Python 139, 관리자 19, UI 모형 57)가 통과했습니다. Python/JavaScript 문법 검사와 git diff --check도 통과했습니다. 서버 검증은 실제 임시 SQLite/Lock을 사용하고 Ollama는 Mock입니다. 중간 삭제 및 번호 초기화 직후 SQL 실패 rollback, 최대 60개 삭제·새 Session 1, 새 Python/Flask 프로세스 재시작/개별 Delete의 번호 정책, Chat/History/Reset/개별 Delete 경합과 tombstone 유지를 검사합니다. UI는 취소·HTTP/통신 실패·중복 실행·늦은 응답·마이크/Audio/URL 정리를 모형으로 실행합니다. 네이티브 스크롤바/Edge DOM·음성 실기기 검증과 구분합니다. 사용자 DB에 Delete All을 실행하지 않았습니다.
+
+사용자가 STEP 7 최종 Edge 실기기 검증 7/7 통과를 확인했습니다. 아래 절차는 향후 회귀 검증용으로 보존하며, 필요한 백업 후 **검증용 DB와 세션**에서 수행하세요.
+
+1. 새 터미널에서 별도 DB를 지정하고 서버를 실행합니다. 기존 서버가 같은 포트를 사용 중이면 작업 완료 후 사용자가 정상 종료해야 하며, 이번 작업에서 서버를 종료하지 않았습니다.
+
+```powershell
+$env:LOCAL_AI_DB_PATH = Join-Path $env:TEMP ("local-ai-delete-all-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".sqlite3")
+.\.venv\Scripts\python.exe app.py
+```
+
+2. 세션을 충분히 만들고 창 높이를 줄입니다. Session List에서 휠·스크롤바 클릭/드래그 중 목록이 열린 상태를 유지하고 아래 항목에 접근 가능한지 확인합니다. 바깥 클릭·Esc·버튼 재클릭은 닫혀야 합니다.
+3. A/B에 질문과 서로 다른 AI Language를 사용합니다. Delete All 확인창의 개수를 확인하고 취소합니다. 목록·대화·D 초안이 유지되어야 하며 Network에 DELETE가 없어야 합니다. 개별 Delete도 기존대로 동작해야 합니다.
+4. Delete All 승인 후 목록/E가 비고 자동 세션 생성이 없는지 확인합니다. D 초안은 유지되어야 합니다. Flask를 같은 DB 경로로 정상 재시작한 뒤 첫 New Chat이 새로운 UUID의 Session 1인지 확인합니다. 이후 개별 Delete는 번호를 초기화하면 안 됩니다.
+5. 녹음·STT·Thinking·합성·재생 중 각각 Delete All을 확인합니다. 후속 Chat/TTS 또는 늦은 텍스트·History·오디오가 살아나면 안 됩니다. Thinking/Reset 처리 중에는 완료 관찰 후 DELETE가 한 번만 나가야 하며 마이크 표시·재생은 정리되어야 합니다.
+6. DB 오류/rollback과 통신 불확실은 자동 모형 테스트로 검증했습니다. 사용 중인 DB 손상·프로세스 강제 종료로 재현하지 마세요. 실제 브라우저 오류 복구는 아직 미검증입니다. 테스트 후 별도 터미널을 종료하면 임시 경로 설정은 다른 터미널에 영향을 주지 않습니다.
+
+남은 제한: 단일 Controller 프로세스, 다른 탭의 상태는 push 동기화하지 않음, 불확실 일괄 삭제의 수동 재동기화 필요, 평문 DB/과거 백업·WAL 데이터, STEP 6-5 연기 및 ISSUE-002 템플릿 후속 과제. 신규 패키지·모델 변경·Git Commit/Push는 없습니다.
+
+## Base Framework v1.0 완료 상태
+
+STEP 5 UI/Session 관리, STEP 6-1~6-4 로컬 STT/TTS·수동/자동 음성 대화, STEP 7 SQLite 저장·Reset/Delete/Delete All·재시작 복원 및 기본 안정성 검증을 완료했습니다. 사용자 최종 Edge 실기기 검증은 7/7 통과이며 최근 자동 테스트는 215개 통과입니다. 검색 기반 장기 기억, MCP·자동 Tool Calling, 모델 선택 및 주변기기 확장은 포함하지 않습니다.

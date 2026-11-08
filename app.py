@@ -1,11 +1,13 @@
 """Local-only HTTP interface for the existing Ollama controller.
 
-Session history lives in this process and is discarded on restart.
+Session history is persisted in the local SQLite database.
 Run with `python app.py` to use the fixed loopback binding.
 """
 import math
+import os
 import time
 import urllib.error
+from contextlib import ExitStack
 from uuid import uuid4
 from dataclasses import dataclass, field
 from threading import Lock
@@ -17,6 +19,7 @@ from werkzeug.exceptions import HTTPException
 import ai_controller
 import ollama_runtime
 from voice import stt_service, tts_service
+from storage.sqlite_store import DEFAULT_DB_PATH, SQLiteStore, StorageError
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -60,14 +63,11 @@ class Session:
     remove_when_unused: bool = False
     deleting: bool = False
     deleted: bool = False
+    revision: int = 0
 
 
 class InvalidOllamaResponse(ValueError):
     """The upstream returned an error or an unusable chat response."""
-
-
-class SessionLimitReached(RuntimeError):
-    """The in-memory active session limit has been reached."""
 
 
 class SessionDeleted(RuntimeError):
@@ -78,13 +78,39 @@ class SessionDeleting(RuntimeError):
     """The session is being removed after an already running operation."""
 
 
-def create_app() -> Flask:
+def create_app(database_path=None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+    store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
+                        limit=MAX_ACTIVE_SESSIONS)
+    app.extensions["session_store"] = store
     sessions: dict[str, Session] = {}
     deleted_session_ids: set[str] = set()
     sessions_lock = Lock()
-    next_session_number = 1
+    deleting_all = False
+
+    def session_from_row(row) -> Session:
+        return Session(number=row["number"], title=row["title"], titled=bool(row["titled"]),
+                       explicit=bool(row["explicit"]), revision=row["revision"])
+
+    # Restore metadata only. Full histories are read only for an operation and
+    # released when its last runtime reference finishes.
+    for row in store.list_sessions():
+        sessions[row["session_id"]] = session_from_row(row)
+
+    def refresh_session(session_id: str, session: Session) -> None:
+        row = store.load(session_id)
+        if row is None:
+            raise SessionDeleted()
+        session.title, session.titled = row["title"], bool(row["titled"])
+        session.revision = row["revision"]
+        session.messages = []
+        if row["system_prompt"] is not None:
+            session.messages.append({"role": "system", "content": row["system_prompt"]})
+        session.messages.extend({"role": item["role"], "content": item["content"]}
+                                for item in row["messages"])
+        session.answer_languages = [item["language"] for item in row["messages"]
+                                    if item["role"] == "assistant"]
 
     @app.before_request
     def apply_endpoint_upload_limit() -> None:
@@ -97,8 +123,9 @@ def create_app() -> Flask:
             request.close()
 
     def acquire_session(session_id: str, create: bool = True) -> tuple[Session | None, bool]:
-        nonlocal next_session_number
         with sessions_lock:
+            if deleting_all:
+                raise SessionDeleting()
             if session_id in deleted_session_ids:
                 raise SessionDeleted()
             session = sessions.get(session_id)
@@ -106,14 +133,14 @@ def create_app() -> Flask:
                 raise SessionDeleting()
             created = False
             if session is None:
-                if not create:
-                    return None, False
-                if len(sessions) >= MAX_ACTIVE_SESSIONS:
-                    raise SessionLimitReached()
-                session = Session(number=next_session_number)
-                next_session_number += 1
+                row = store.load(session_id)
+                if row is None:
+                    if not create:
+                        return None, False
+                    row = store.create(session_id)
+                    created = True
+                session = session_from_row(row)
                 sessions[session_id] = session
-                created = True
             session.active_requests += 1
             return session, created
 
@@ -129,7 +156,11 @@ def create_app() -> Flask:
             if (session.active_requests == 0 and session.remove_when_unused
                     and not session.explicit
                     and not session.messages and sessions.get(session_id) is session):
+                store.discard_empty_implicit(session_id)
                 del sessions[session_id]
+            if session.active_requests == 0:
+                session.messages = []
+                session.answer_languages = []
 
     def session_summary(session_id: str, session: Session) -> dict[str, Any]:
         return {"session_id": session_id, "number": session.number, "title": session.title}
@@ -145,19 +176,18 @@ def create_app() -> Flask:
     @app.get("/sessions")
     def list_sessions() -> Response:
         with sessions_lock:
-            snapshot = list(sessions.items())
-        items = []
-        for session_id, session in snapshot:
-            with session.lock:
-                if not session.deleting:
-                    items.append(session_summary(session_id, session))
-        items.sort(key=lambda item: item["number"])
+            if deleting_all:
+                raise SessionDeleting()
+            items = [{key: row[key] for key in ("session_id", "number", "title")}
+                     for row in store.list_sessions()
+                     if row["session_id"] not in sessions or not sessions[row["session_id"]].deleting]
         return jsonify(sessions=items)
 
     @app.post("/sessions")
     def create_session() -> Response | tuple[Response, int]:
-        nonlocal next_session_number
         with sessions_lock:
+            if deleting_all:
+                raise SessionDeleting()
             if len(sessions) >= MAX_ACTIVE_SESSIONS:
                 return error_response(
                     "session_limit_reached",
@@ -166,11 +196,49 @@ def create_app() -> Flask:
             session_id = f"s-{uuid4().hex}"
             while session_id in sessions or session_id in deleted_session_ids:
                 session_id = f"s-{uuid4().hex}"
-            session = Session(number=next_session_number, explicit=True)
-            next_session_number += 1
+            session = session_from_row(store.create(session_id, explicit=True))
             sessions[session_id] = session
             summary = session_summary(session_id, session)
         return jsonify(summary), 201
+
+    @app.delete("/sessions")
+    def delete_all_sessions() -> Response:
+        nonlocal deleting_all
+        with sessions_lock:
+            # Do not race an individual Delete or another bulk operation.
+            if deleting_all or any(session.deleting for session in sessions.values()):
+                raise SessionDeleting()
+            deleting_all = True
+            snapshot = list(sessions.items())
+            for _, session in snapshot:
+                session.deleting = True
+                session.active_requests += 1
+        try:
+            # Never wait for operation locks while holding sessions_lock.
+            # A Chat already running finishes first; queued work is rejected.
+            with ExitStack() as locks:
+                for _, session in snapshot:
+                    locks.enter_context(session.lock)
+                deleted_ids = store.delete_all()
+                with sessions_lock:
+                    deleted_session_ids.update(deleted_ids)
+                    sessions.clear()
+                    for _, session in snapshot:
+                        session.deleted = True
+                        session.messages.clear()
+                        session.answer_languages.clear()
+                        session.title = ""
+                        session.titled = False
+            return jsonify(status="deleted_all", deleted_count=len(deleted_ids),
+                           deleted_session_ids=deleted_ids)
+        finally:
+            with sessions_lock:
+                for _, session in snapshot:
+                    if not session.deleted:
+                        session.deleting = False
+                deleting_all = False
+            for session_id, session in snapshot:
+                release_session(session_id, session)
 
     @app.get("/sessions/<session_id>/history")
     def session_history(session_id: str) -> Response | tuple[Response, int]:
@@ -182,6 +250,7 @@ def create_app() -> Flask:
         try:
             with session.lock:
                 require_live_session(session)
+                refresh_session(session_id, session)
                 summary = session_summary(session_id, session)
                 answer_index = 0
                 messages = []
@@ -204,6 +273,8 @@ def create_app() -> Flask:
         if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
             return error_response("invalid_session_id", "유효한 session_id가 필요합니다.", 400)
         with sessions_lock:
+            if deleting_all:
+                raise SessionDeleting()
             session = sessions.get(session_id)
             if session is None:
                 return error_response("session_not_found", "세션을 찾을 수 없습니다.", 404)
@@ -215,6 +286,11 @@ def create_app() -> Flask:
             # A Chat already owning the lock finishes first. All queued/new
             # operations are rejected; no old request can recreate this ID.
             with session.lock:
+                # The Chat holding this lock has now committed or failed.
+                row = store.load(session_id)
+                if row is None:
+                    raise SessionDeleted()
+                store.delete(session_id, row["revision"])
                 with sessions_lock:
                     deleted_session_ids.add(session_id)
                     sessions.pop(session_id, None)
@@ -240,6 +316,12 @@ def create_app() -> Flask:
 
     def error_response(code: str, message: str, status: int) -> tuple[Response, int]:
         return jsonify(error={"code": code, "message": message}), status
+
+    @app.errorhandler(StorageError)
+    def storage_error(error: StorageError) -> tuple[Response, int]:
+        # Storage exceptions contain only fixed, public messages, never paths,
+        # SQL, transcript content or the underlying exception text.
+        return error_response(error.code, str(error), error.status)
 
     def server_timing_header(**durations: float) -> str:
         return ", ".join(
@@ -293,19 +375,14 @@ def create_app() -> Flask:
             )
 
         started = time.perf_counter()
-        try:
-            session, created = acquire_session(session_id)
-        except SessionLimitReached:
-            return error_response(
-                "session_limit_reached",
-                f"활성 세션은 최대 {MAX_ACTIVE_SESSIONS}개까지 사용할 수 있습니다.", 429,
-            )
+        session, created = acquire_session(session_id)
         assert session is not None
         committed = False
         try:
             # Keep a chat and a concurrent reset on the same session ordered.
             with session.lock:
                 require_live_session(session)
+                refresh_session(session_id, session)
                 messages = session.messages or [
                     {"role": "system", "content": ai_controller.SYSTEM_PROMPT},
                 ]
@@ -356,11 +433,16 @@ def create_app() -> Flask:
                     if duration and "eval_count" in metrics else None
                 )
                 answer = {"role": "assistant", "content": assistant["content"]}
-                session.messages = messages + [user_message, answer]
+                title = session.title
                 if not session.titled:
                     first = message.strip().replace("\r", " ").replace("\n", " ")
-                    session.title = first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
-                    session.titled = True
+                    title = first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
+                store.commit_turn(session_id, session.revision, user=message,
+                                  answer=answer["content"], title=title,
+                                  system_prompt=messages[0]["content"], language=response_language)
+                session.revision += 1
+                session.title, session.titled = title, True
+                session.messages = messages + [user_message, answer]
                 session.answer_languages.append(response_language)
                 committed = True
         except urllib.error.HTTPError:
@@ -516,15 +598,20 @@ def create_app() -> Flask:
             return error_response("invalid_session_id", f"session_id는 {MAX_SESSION_ID_LENGTH}자 이하의 문자열이어야 합니다.", 400)
         session, _ = acquire_session(session_id, create=False)
         if session is not None:
+            reset_committed = False
             try:
                 with session.lock:
                     require_live_session(session)
+                    refresh_session(session_id, session)
+                    store.reset(session_id, session.revision)
+                    reset_committed = True
+                    session.revision += 1
                     session.messages.clear()
                     session.answer_languages.clear()
                     session.title = "새 대화"
                     session.titled = False
             finally:
-                release_session(session_id, session, reset=True)
+                release_session(session_id, session, reset=reset_committed)
         return jsonify(session_id=session_id, status="reset")
 
     @app.post("/ollama/<action>")

@@ -1,8 +1,9 @@
-"""RAM session API tests; Ollama calls are mocked."""
+"""Persistent session API tests; Ollama calls are mocked."""
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 from unittest.mock import patch
+from sqlite_test_support import isolated_database
 
 from app import Session, create_app
 
@@ -13,6 +14,7 @@ def answer():
 
 class SessionApiTests(unittest.TestCase):
     def setUp(self):
+        self.database_path = isolated_database(self)
         self.app = create_app()
         self.client = self.app.test_client()
         mocked = patch("ai_controller.ask_ollama", return_value=answer())
@@ -24,13 +26,13 @@ class SessionApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         return response.json
 
-    def test_list_is_read_only_and_restart_loses_ram_sessions(self):
+    def test_list_is_read_only_and_restart_restores_sessions(self):
         self.assertEqual(self.client.get("/sessions").json, {"sessions": []})
         first = self.create()
         self.assertEqual(first["number"], 1)
         self.assertNotEqual(first["session_id"], "1")
         self.assertEqual(self.client.get("/sessions").json["sessions"], [first])
-        self.assertEqual(create_app().test_client().get("/sessions").json, {"sessions": []})
+        self.assertEqual(create_app().test_client().get("/sessions").json, {"sessions": [first]})
 
     def test_numbers_titles_history_and_separation(self):
         a, b = self.create(), self.create()

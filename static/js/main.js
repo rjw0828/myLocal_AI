@@ -28,6 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const resetSessionButton = $("#reset-session");
   const sessionPopup = $("#session-popup");
   const sessionPopupItems = $("#session-popup-items");
+  const deleteAllSessionsButton = $("#delete-all-sessions");
   const messageInput = $("#message");
   const lockNote = $("#lock-note");
   const clearOutputButton = $("#clear-output");
@@ -49,6 +50,16 @@ document.addEventListener("DOMContentLoaded", () => {
   let chatStorage = null;
   try { chatStorage = window.sessionStorage; } catch (_error) { /* In-tab guard remains. */ }
   const chatGuard = new ChatSessionGuard(chatStorage);
+  let deletingAll = false;
+  let preparingDeleteAll = false;
+  let deleteAllUncertain = false;
+  try { deleteAllUncertain = Boolean(chatStorage && chatStorage.getItem("local-ai-delete-all-uncertain") === "true"); }
+  catch (_error) { /* In-tab protection remains. */ }
+  const persistDeleteAll = (uncertain) => {
+    deleteAllUncertain = uncertain;
+    try { if (chatStorage) chatStorage.setItem("local-ai-delete-all-uncertain", String(uncertain)); }
+    catch (_error) { /* Never release the in-memory block on storage failure. */ }
+  };
   const VOICE_MAX_BYTES = 10 * 1024 * 1024;
   const VOICE_MAX_MS = 30_000;
   const VOICE_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm"];
@@ -330,6 +341,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const startTts = async (button, status, message, turn = null, onSpeaking = null) => {
+    if (deletingAll || deleteAllUncertain) return;
     if (deletingSessions.has(currentConversationSession) || deletedSessions.has(currentConversationSession)) return;
     if (turn && !voiceTurns.valid(turn)) return;
     if (ttsTextLength(message.content) > TTS_MAX_CODE_POINTS) {
@@ -470,6 +482,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const appendConversation = (sessionId, role, content, language = null) => {
+    if (deletingAll || deleteAllUncertain) return null;
     if (deletedSessions.has(sessionId) || deletingSessions.has(sessionId)) return null;
     const messages = conversations.get(sessionId) || [];
     if (currentConversationSession === sessionId && ttsState !== "idle") {
@@ -503,7 +516,8 @@ document.addEventListener("DOMContentLoaded", () => {
     sessionPopup.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 230) - 8))}px`;
     sessionPopup.style.width = `${Math.min(Math.max(rect.width, 230), window.innerWidth - 16)}px`;
     sessionPopup.style.maxHeight = `${height}px`;
-    sessionPopupItems.style.maxHeight = `${height}px`;
+    // Reserve header space; only the list scrolls, including in small windows.
+    sessionPopupItems.style.maxHeight = `${Math.max(0, height - 46)}px`;
     sessionPopup.style.bottom = above ? `${Math.max(8, window.innerHeight - rect.top + 4)}px` : "auto";
     sessionPopup.style.top = above ? "auto" : "8px";
   };
@@ -525,7 +539,7 @@ document.addEventListener("DOMContentLoaded", () => {
     sessionPopupItems.replaceChildren();
     if (!items.length) {
       const empty = document.createElement("p");
-      empty.textContent = "저장된 RAM 세션이 없습니다.";
+      empty.textContent = "저장된 세션이 없습니다.";
       sessionPopupItems.append(empty);
     }
     items.forEach((detail) => {
@@ -538,14 +552,14 @@ document.addEventListener("DOMContentLoaded", () => {
       button.textContent = sessionCaption(detail);
       button.dataset.sessionId = detail.session_id;
       button.setAttribute("aria-current", String(detail.session_id === sessionInput.value));
-      button.disabled = deletingSessions.has(detail.session_id);
+      button.disabled = deletingAll || deleteAllUncertain || deletingSessions.has(detail.session_id);
       button.addEventListener("click", () => { closeSessionPopup(); selectSession(detail.session_id); });
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "session-delete";
       remove.textContent = "Delete";
       remove.setAttribute("aria-label", `${sessionCaption(detail)} 삭제`);
-      remove.disabled = deletingSessions.has(detail.session_id);
+      remove.disabled = deletingAll || deleteAllUncertain || deletingSessions.has(detail.session_id);
       remove.addEventListener("click", (event) => {
         event.stopPropagation();
         deleteSession(detail.session_id);
@@ -560,7 +574,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const resetVersion = sessionResetVersions.get(sessionId) || 0;
     const isCurrent = () => loadId === historyLoadId && revision === sessionRevision
       && sessionInput.value === sessionId
-      && !deletedSessions.has(sessionId) && !deletingSessions.has(sessionId)
+      && !deletingAll && !deleteAllUncertain && !deletedSessions.has(sessionId) && !deletingSessions.has(sessionId)
       && resetVersion === (sessionResetVersions.get(sessionId) || 0);
     try {
       const result = requireSuccess(await requestJson(`/sessions/${encodeURIComponent(sessionId)}/history`, { method: "GET" }));
@@ -583,6 +597,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
   const selectSession = (sessionId) => {
+    if (deletingAll || deleteAllUncertain) return;
     if (!sessionDetails.has(sessionId) || deletedSessions.has(sessionId) || deletingSessions.has(sessionId)) return;
     closeSessionPopup();
     sessionInput.value = sessionId;
@@ -596,6 +611,7 @@ document.addEventListener("DOMContentLoaded", () => {
     rememberSelection("");
   };
   const deleteSession = async (sessionId) => {
+    if (preparingDeleteAll || deletingAll || deleteAllUncertain) return;
     const detail = sessionDetails.get(sessionId);
     if (!detail || deletingSessions.has(sessionId) || deletedSessions.has(sessionId)) return;
     if (!window.confirm(`${sessionCaption(detail)}\n이 세션과 대화 기록을 완전히 삭제할까요?`)) return;
@@ -658,7 +674,84 @@ document.addEventListener("DOMContentLoaded", () => {
       }).catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
     }
   };
+  const deleteAllSessions = async () => {
+    if (preparingDeleteAll || deletingAll || deleteAllUncertain || sessionCreating || deletingSessions.size) return;
+    preparingDeleteAll = true;
+    updateInputState();
+    const affected = new Set();
+    let approved = false, sent = false, confirmed = false;
+    try {
+      // A confirmation preview must not be invalidated by a concurrent Chat's
+      // list refresh, nor mutate the Conversation if the user cancels.
+      const preview = requireSuccess(await requestJson("/sessions", { method: "GET" }));
+      const items = preview.sessions;
+      if (!Array.isArray(items) || !items.every((item) => item && typeof item.session_id === "string")) {
+        throw new ApiError("Invalid Delete All session list.");
+      }
+      if (!window.confirm(`전체 ${items.length}개 세션과 모든 대화 기록을 삭제할까요?\n성공하면 다음 Session 번호가 1부터 시작합니다.`)) return;
+      approved = true;
+      deletingAll = true;
+      [...items.map((item) => item.session_id), ...sessionDetails.keys(), ...chatGuard.pending.keys(), ...chatGuard.uncertain].forEach((id) => affected.add(id));
+      affected.forEach((id) => {
+        deletingSessions.add(id);
+        sessionResetVersions.set(id, (sessionResetVersions.get(id) || 0) + 1);
+      });
+      sessionRevision += 1;
+      historyLoadId += 1;
+      sessionListLoadId += 1;
+      closeSessionPopup();
+      voiceTurns.cancel("Delete All approved.");
+      if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
+      stopTts("Delete All approved. Playback stopped.");
+      appendLog("RUNNING", "DELETE /sessions", "Waiting for observed Chat/Reset operations before Delete All.");
+      // Do not abort Chat transport: observe its completion, then delete.
+      // An uncertain Chat prevents the bulk request altogether.
+      await Promise.all([...affected].map((id) => chatGuard.beforeReset(id)));
+      sent = true;
+      persistDeleteAll(true); // A reload during the request must remain blocked.
+      const packet = await requestJson("/sessions", { method: "DELETE" });
+      const data = packet.data;
+      if (packet.response.ok && (data.status !== "deleted_all"
+          || !Number.isInteger(data.deleted_count) || !Array.isArray(data.deleted_session_ids)
+          || data.deleted_count !== data.deleted_session_ids.length
+          || !data.deleted_session_ids.every((id) => typeof id === "string"))) {
+        throw new ApiError("Invalid Delete All response; server completion is unknown.");
+      }
+      confirmed = true;
+      persistDeleteAll(false);
+      requireSuccess(packet);
+      [...affected, ...data.deleted_session_ids].forEach((id) => deletedSessions.add(id));
+      conversations.clear();
+      sessionDetails.clear();
+      clearSelectedSession(); // Keeps the user's D draft unchanged.
+      sessionPopupItems.replaceChildren();
+      appendLog("SUCCESS", "DELETE /sessions", `${data.deleted_count} sessions deleted. Next Session number: 1.`);
+    } catch (error) {
+      appendLog("ERROR", "DELETE /sessions", errorMessage(error));
+      if (sent && !confirmed) {
+        appendLog("INFO", "SESSION STATE", "Delete All completion is unknown. Session changes remain blocked across reload; verify server state before resynchronization. No automatic retry.");
+      }
+    } finally {
+      if (approved) {
+        sessionRevision += 1;
+        historyLoadId += 1;
+        sessionListLoadId += 1;
+      }
+      affected.forEach((id) => deletingSessions.delete(id));
+      deletingAll = false;
+      preparingDeleteAll = false;
+      updateInputState();
+      if (approved && !deleteAllUncertain) {
+        refreshSessionList().then(() => {
+          const id = sessionInput.value;
+          if (id && sessionDetails.has(id) && !chatGuard.reason(id)) loadSessionHistory(id, sessionRevision);
+          updateInputState();
+        }).catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
+      }
+    }
+  };
   const createNewSession = async () => {
+    if (preparingDeleteAll || deletingAll || deleteAllUncertain) return;
     if (sessionCreating || requestRunning) return;
     sessionCreating = true;
     newChatButton.disabled = true;
@@ -981,6 +1074,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const startRecording = async () => {
+    if (deletingAll || deleteAllUncertain) return;
     const locked = lockButton.getAttribute("aria-pressed") === "true";
     if (!sessionInput.value || deletingSessions.has(sessionInput.value) || deletedSessions.has(sessionInput.value)) return;
     if (locked || requestRunning || isVoiceBusy()) return;
@@ -1076,8 +1170,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const automatic = Boolean(voiceTurns && voiceTurns.active);
     const sessionId = sessionInput.value.trim();
     const blocked = sessionId ? chatGuard.reason(sessionId) : null;
-    const unavailable = deletingSessions.has(sessionId) || deletedSessions.has(sessionId);
-    newChatButton.disabled = sessionCreating || requestRunning;
+    const unavailable = deletingAll || deleteAllUncertain || deletingSessions.has(sessionId) || deletedSessions.has(sessionId);
+    newChatButton.disabled = preparingDeleteAll || deletingAll || deleteAllUncertain || sessionCreating || requestRunning;
+    deleteAllSessionsButton.disabled = preparingDeleteAll || deletingAll || deleteAllUncertain || sessionCreating || deletingSessions.size > 0;
+    deleteAllSessionsButton.textContent = deletingAll ? "Deleting…" : preparingDeleteAll ? "Loading…" : "Delete All";
+    sessionPopupItems.querySelectorAll("button").forEach((button) => {
+      const row = button.closest(".session-row");
+      button.disabled = deletingAll || deleteAllUncertain || Boolean(row && deletingSessions.has(row.dataset.sessionId));
+    });
     messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy;
     sttLanguage.disabled = locked || requestRunning || voiceBusy;
     recordVoiceButton.disabled = locked || !sessionId || unavailable || requestRunning
@@ -1144,6 +1244,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const resetCurrentSession = async () => {
+    if (deletingAll || deleteAllUncertain) return;
     if (requestRunning) return;
     const sessionId = sessionInput.value.trim();
     if (deletingSessions.has(sessionId) || deletedSessions.has(sessionId)) return;
@@ -1200,6 +1301,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const runSelectedTool = async (tool = "chat") => {
+    if (tool !== "health" && (deletingAll || deleteAllUncertain)) return;
     if (tool === "reset") return resetCurrentSession();
     if (requestRunning) return;
     if (isVoiceBusy()) {
@@ -1405,8 +1507,10 @@ document.addEventListener("DOMContentLoaded", () => {
     setConversationSession(sessionInput.value.trim());
   });
   newChatButton.addEventListener("click", createNewSession);
+  deleteAllSessionsButton.addEventListener("click", deleteAllSessions);
   resetSessionButton.addEventListener("click", resetCurrentSession);
   sessionListButton.addEventListener("click", async () => {
+    if (deletingAll || deleteAllUncertain) return;
     if (!sessionPopup.hidden) { closeSessionPopup(); return; }
     try {
       await refreshSessionList();
@@ -1423,7 +1527,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.key === "Escape" && !sessionPopup.hidden) closeSessionPopup();
   });
   window.addEventListener("resize", positionSessionPopup);
-  window.addEventListener("scroll", () => { if (!sessionPopup.hidden) closeSessionPopup(); }, true);
+  window.addEventListener("scroll", (event) => {
+    // Captured scroll events include non-bubbling scrolls from the list and
+    // its native scrollbar. Only page/other-panel scrolling closes the popup.
+    if (!sessionPopup.hidden && (event.target === window || !sessionPopup.contains(event.target))) closeSessionPopup();
+  }, true);
   messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -1452,6 +1560,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   appendLog("READY", "SYSTEM", "Local controller console initialized. Unlock D to send Chat; session controls are in E.");
+  if (deleteAllUncertain) appendLog("ERROR", "SESSION STATE", "Previous Delete All completion is unknown. Session changes remain blocked; verified server resynchronization is required.");
   renderConversation(currentConversationSession);
   updateInputState();
   initializeSessions();
