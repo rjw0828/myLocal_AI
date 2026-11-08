@@ -1,0 +1,2 @@
+# Optional MCP core dependency; existing Flask/STT/TTS dependencies stay separate.
+mcp==2.3.0
