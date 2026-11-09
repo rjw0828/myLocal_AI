@@ -51,13 +51,23 @@ $env:LOCAL_AI_MCP_APPROVALS = 'F:\LLM\AI_Project\myLocalAI\data\mcp_approved_pro
 .\.venv\Scripts\python.exe app.py
 ```
 
-Profiles are read lazily once per Controller instance. Restart after changing
-them. A saved registration can run only when its immutable config fingerprint
+Profiles are cached lazily; an explicit GET `/profiles` or profile-request status
+check reloads the owner-written file. A saved registration can run only when its immutable config fingerprint
 still matches a current profile. A changed/missing profile blocks Start; it does
 not remove the saved registration or grants. To intentionally change a registered
 configuration, Stop/Delete it and register the newly approved profile again.
 Trusted Python integration/tests can instead pass a sequence of `ServerConfig`
 objects as `create_app(mcp_approved_configs=...)`.
+
+The Windows `start_app.bat` launcher preserves an existing
+`LOCAL_AI_MCP_APPROVALS` value. If it is unset and the project-local
+`data/mcp_approved_profiles.json` exists, the launcher passes that path to Python.
+If neither is present, it starts normally without approved profiles. An explicit
+missing/invalid path is never silently replaced. This environment change is local
+to the launcher (`setlocal`); it does not modify user/system settings or create or
+edit approval files. The service also falls back to `mcp_approved_profiles.json`
+beside its MCP DB when no override is set, so new CLI-approved profiles are usable
+without an environment change/restart. No server is automatically started by loading profiles.
 
 ## Local request policy
 
@@ -83,6 +93,9 @@ All paths below start with `/mcp`.
 | Method/path | Body / response purpose |
 |---|---|
 | `GET /profiles` | Available local `profile_id` values; no executable paths |
+| `POST /profile-requests` | `{name,transport:"stdio",executable,arguments:[...]}` creates an untrusted proposal only; 201 `{request:...}` |
+| `GET /profile-requests/<id>` | Reload owner approvals and report pending/approved with terminal review command |
+| `DELETE /profile-requests/<id>` | Remove only the proposal; never revoke/edit an approved profile |
 | `GET /servers` | `{"servers":[...]}` with registration and runtime status |
 | `POST /servers` | `{"profile_id":"...","name":"optional display name"}`; 201 `{"server":...}` |
 | `GET /servers/<id>` | Registration, execution approval and status |
@@ -115,8 +128,10 @@ from losing the connection or timing out.
 
 ## Manual invocation sequence
 
-1. Select an owner-approved profile and register it. HTTP cannot submit executable
-   paths, command strings, arguments, or self-approved execution configurations.
+1. Select an owner-approved profile and register it. The existing `/servers` API
+   still cannot accept executable paths, arguments or self-approved configurations.
+   A new profile request can carry an executable/argument proposal but cannot approve
+   or execute it; use the independent local-terminal boundary below first.
 2. Explicitly Start; GET Tools discovers capabilities without executing them.
 3. Review a tool and explicitly PUT `allowed:true`. Default is deny. This records
    a fingerprint of name, description and input schema. Changed descriptors are
@@ -148,6 +163,38 @@ local-fragment only; external references are rejected and never downloaded.
 Tokens contain no stored arguments; only their fingerprints are kept in RAM.
 Call results remain only in the core's bounded operation history, not SQLite or
 diagnostic logs. Revoke also blocks subsequent API retrieval of a late result.
+
+## New-profile owner approval boundary
+
+`/profile-requests` uses all existing loopback, header, exact-origin, JSON and
+body-size guards. Only stdio and validated `ServerConfig` executables/argv are
+accepted; shell launchers, relative executables and arbitrary extra fields fail.
+Proposals are finite, bounded JSON files (64 KiB each, maximum 64 entries, 24-hour
+validity) under `mcp_profile_requests/` beside the MCP DB. This never modifies the
+registry or starts a process. UUID filenames cannot select other paths. Fixed
+Python-injected profile configurations disable web profile management.
+
+Only `scripts/approve_mcp_profile.py` can append an execution approval. From a
+local terminal run the exact command displayed in Add Server; it includes the
+request ID and explicit request/approval paths, so custom configurations need no
+environment edits. Review JSON-escaped executable, separate argv and cwd, then
+type `APPROVE <request-id>`. There is no HTTP approval route or unattended `--yes`.
+The script rechecks the request after confirmation, validates/preserves all
+existing profiles, uses an exclusive lock and atomic file replacement, refuses
+conflicting IDs, and never runs the proposed command. A CLI cancellation or write
+failure preserves the original manifest. Stale locks are not stolen automatically.
+Only after the owner file matches the exact proposal does GET report approved;
+the UI then uses the unchanged POST `/servers`. Registration remains STOPPED and
+every tool still defaults to denied with a separate 120-second per-call approval.
+
+This is a separate local-owner terminal, not Windows UAC authentication or an OS
+sandbox. Same-account malware/filesystem writers remain inside the existing trust
+boundary. Approved binaries/scripts are not content-pinned. Do not edit the file
+outside the approver concurrently; optimistic change checks complement cooperating
+approver locks but cannot turn uncoordinated external writers into a transaction.
+Proposals/approvals stay plaintext and Git-ignored. Cancelling/removing proposals
+does not revoke already approved configurations. Profile revocation remains an
+owner configuration task.
 
 ## Concurrency, timeout and shutdown
 

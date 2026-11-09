@@ -81,7 +81,7 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
 
     @api.get("/profiles")
     def profiles():
-        return jsonify(profiles=[{"profile_id": key} for key in service.profiles()])
+        return jsonify(profiles=[{"profile_id": key} for key in service.refresh_profiles()])
 
     @api.route("/servers", methods=["GET", "POST"])
     def servers():
@@ -90,6 +90,19 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
         data = body(required=("profile_id",), optional=("name",))
         profile_id = text(data["profile_id"])
         return jsonify(server=service.create_server(profile_id, text(data.get("name", profile_id)))), 201
+
+    @api.post("/profile-requests")
+    def propose_profile():
+        data = body(required=("name", "transport", "executable", "arguments"))
+        return jsonify(request=service.propose_profile(text(data["name"]), text(data["transport"]),
+                                                       text(data["executable"], 32767), data["arguments"])), 201
+
+    @api.route("/profile-requests/<request_id>", methods=["GET", "DELETE"])
+    def profile_request(request_id):
+        if request.method == "DELETE":
+            service.profile_requests().delete(request_id)
+            return jsonify(status="cancelled")
+        return jsonify(request=service.profile_request_status(request_id))
 
     @api.route("/servers/<server_id>", methods=["GET", "DELETE"])
     def server(server_id):

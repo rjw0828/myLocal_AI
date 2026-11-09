@@ -19,6 +19,11 @@ if not exist "%~dp0app.py" (
     exit /b 1
 )
 
+rem Preserve an explicit approval path; otherwise use the owner's local file.
+if not defined LOCAL_AI_MCP_APPROVALS (
+    if exist "%~dp0data\mcp_approved_profiles.json" set "LOCAL_AI_MCP_APPROVALS=%~dp0data\mcp_approved_profiles.json"
+)
+
 echo [Local AI Lab] Starting Flask Web Console...
 echo [Local AI Lab] http://127.0.0.1:5000
 echo [Local AI Lab] Press Ctrl+C to stop the server.

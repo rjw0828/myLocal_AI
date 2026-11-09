@@ -65,9 +65,10 @@ class MCPConsoleTests(unittest.TestCase):
         self.assertFalse(service.database_path.exists())
 
     def test_mcp_asset_is_served_without_touching_sessions_or_starting_mcp(self):
-        with self.client.get("/static/js/mcp-ui.js") as response:
-            self.assertEqual(response.status_code, 200)
-            self.assertIn(response.mimetype, {"text/javascript", "application/javascript"})
+        for asset in ("mcp-ui.js", "mcp-schema.js"):
+            with self.client.get("/static/js/" + asset) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(response.mimetype, {"text/javascript", "application/javascript"})
         service = self.app.extensions["mcp_service"]
         self.assertIsNone(service._registry)
         self.assertIsNone(service._runtime)

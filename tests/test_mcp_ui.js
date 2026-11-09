@@ -8,14 +8,17 @@ global.AbortController = class {
   abort() { this.signal.aborted = true; }
 };
 const { createMCPConsole } = require("../static/js/mcp-ui.js");
+const schemaEditor = require("../static/js/mcp-schema.js");
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.listeners = {}; this.dataset = {}; this.value = ""; this.hidden = false; this.disabled = false; this.open = false; this._text = ""; }
+  constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.dataset = {}; this.attributes = {}; this.value = ""; this.hidden = false; this.disabled = false; this.open = false; this._text = ""; this.checked = false; }
   set textContent(value) { this._text = value; this.children = []; }
   get textContent() { return this._text + this.children.map((item) => item.textContent).join(""); }
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this._text = ""; this.children = items; }
   addEventListener(name, handler) { (this.listeners[name] = this.listeners[name] || []).push(handler); }
   querySelectorAll(tag) { return this.children.flatMap((item) => [...(item.tag === tag ? [item] : []), ...item.querySelectorAll(tag)]); }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  getAttribute(name) { return this.attributes[name]; }
   showModal() { this.open = true; }
   close() { this.open = false; }
   focus() { this.focused = true; }
@@ -60,7 +63,7 @@ function fixture() {
     const item = nodes[`mcp-${container}`].querySelectorAll("button").find((item) => item.textContent === label);
     assert.ok(item, `Missing button: ${label}; status=${nodes["mcp-message"].textContent}`); return item;
   };
-  const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "Allow tool").fire(); await button("tools", "Select tool").fire(); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
+  const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); await button("tools", "Allow tool").fire(); await button("tools", "echo").fire(); nodes["mcp-raw-mode"].checked = true; await nodes["mcp-raw-mode"].fire("change"); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
   return { ui, nodes, requests, prompts, handlers, server, info, stored, timers, button, ready, confirm: (value) => { allowConfirmation = value; } };
 }
 const tests = [];
@@ -100,9 +103,10 @@ test("Start/Stop/Delete respect lifecycle and delete cancellation", async () => 
 });
 test("tools display live schema and default denial; grant/revoke are explicit", async () => {
   const f = fixture(); await f.ui.open(); await f.button("servers", "Tools").fire();
-  assert.match(f.nodes["mcp-tools"].textContent, /Returns text.*properties.*Blocked/s);
-  assert.equal(f.button("tools", "Select tool").disabled, true);
+  for (const text of [/Returns text/, /properties/, /Blocked/]) assert.match(f.nodes["mcp-tools"].textContent, text);
+  await f.button("tools", "echo").fire(); assert.equal(f.nodes["mcp-execute"].disabled, true);
   await f.button("tools", "Allow tool").fire(); assert.equal(f.info.allowed, true);
+  await f.button("tools", "echo").fire();
   await f.button("tools", "Block tool").fire(); assert.equal(f.info.allowed, false);
 });
 test("confirmed manual call uses one approval and one call with identical arguments", async () => {
@@ -157,7 +161,7 @@ test("timeout keeps call blocked; manual result check observes late completion",
 });
 test("lost call response remains blocked across refresh until explicit Stop", async () => {
   const f = fixture(); await f.ready(); f.handlers["/mcp/servers/s1/tools/echo/call"] = () => { throw new TypeError("network"); };
-  await f.nodes["mcp-execute"].fire(); await f.ui.refresh(); await f.button("servers", "Tools").fire(); await f.button("tools", "Select tool").fire();
+  await f.nodes["mcp-execute"].fire(); await f.ui.refresh(); await f.button("servers", "Tools").fire(); await f.button("tools", "echo").fire();
   assert.equal(f.nodes["mcp-execute"].disabled, true); assert.match(f.stored.get("local-ai-mcp-pending"), /s1/);
   await f.button("servers", "Stop").fire(); assert.equal(f.stored.get("local-ai-mcp-pending"), "[]");
 });
@@ -260,6 +264,156 @@ test("tool discovery updates the small hint and never replaces the section title
   assert.equal(f.nodes["mcp-tools-title"].textContent, "Selected MCP Tools");
   await f.ui.refresh(); assert.equal(f.nodes["mcp-tools-hint"].textContent, "Select a running server to discover tools.");
   assert.equal(f.nodes["mcp-tools-title"].textContent, "Selected MCP Tools");
+});
+const autoReady = async (f) => { await f.ready(); f.nodes["mcp-raw-mode"].checked = false; await f.nodes["mcp-raw-mode"].fire("change"); };
+const field = (f, name) => ["input", "select", "textarea"].flatMap((tag) => f.nodes["mcp-auto-form"].querySelectorAll(tag)).find((item) => item.getAttribute("aria-label") === name);
+test("automatic form sends timezone default without reading stale raw JSON", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", properties: { timezone: { type: "string", default: "Asia/Seoul" } } };
+  await autoReady(f); f.nodes["mcp-arguments"].value = "not JSON";
+  assert.equal(field(f, "timezone").value, "Asia/Seoul"); await f.nodes["mcp-execute"].fire();
+  assert.deepEqual(calls(f, "/call")[0].data.arguments, { timezone: "Asia/Seoul" });
+});
+test("automatic number/integer/boolean/enum retain JSON types", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", properties: { count: { type: "integer", default: 2, minimum: 1 }, ratio: { type: "number", default: .5 }, enabled: { type: "boolean", default: false }, zone: { type: "string", enum: ["ko", "en"], default: "en" } } };
+  await autoReady(f); await f.nodes["mcp-execute"].fire();
+  assert.deepEqual(calls(f, "/call")[0].data.arguments, { count: 2, ratio: .5, enabled: false, zone: "en" });
+});
+test("invalid integer, number range and required text block approval", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", properties: { count: { type: "integer", minimum: 0 }, text: { type: "string", minLength: 1 } }, required: ["count", "text"] };
+  await autoReady(f);
+  for (const [number, text] of [["1.5", "ok"], ["-1", "ok"], ["", "ok"], ["1", ""]]) {
+    field(f, "count").value = number; field(f, "text").value = text; await f.nodes["mcp-execute"].fire();
+  }
+  assert.equal(calls(f, "/approve").length, 0);
+});
+test("optional values are omitted unless included; defaults are included", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", properties: { optional: { type: "string" }, included: { type: "boolean", default: false } } };
+  await autoReady(f); await f.nodes["mcp-execute"].fire();
+  assert.deepEqual(calls(f, "/call")[0].data.arguments, { included: false });
+});
+test("nested objects and typed JSON arrays produce structured arguments", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", properties: { nested: { type: "object", properties: { label: { type: "string", default: "x" } }, required: ["label"] }, numbers: { type: "array", items: { type: "integer" } } }, required: ["nested", "numbers"] };
+  await autoReady(f); field(f, "numbers").value = "[1,2]"; await f.nodes["mcp-execute"].fire();
+  assert.deepEqual(calls(f, "/call")[0].data.arguments, { nested: { label: "x" }, numbers: [1, 2] });
+  field(f, "numbers").value = '["wrong"]'; await f.nodes["mcp-execute"].fire(); assert.equal(calls(f, "/call").length, 1);
+});
+test("unsupported union/ref schemas fall back to advanced JSON", async () => {
+  const f = fixture(); f.info.input_schema = { type: "object", oneOf: [{ required: ["text"] }, { required: ["number"] }] };
+  await f.ready(); assert.equal(f.nodes["mcp-raw-mode"].checked, true); assert.equal(f.nodes["mcp-raw-mode"].disabled, true);
+  assert.equal(f.nodes["mcp-raw-panel"].hidden, false); assert.match(f.nodes["mcp-form-notice"].textContent, /Advanced Raw JSON/);
+  assert.equal(schemaEditor.supported({ type: "object", properties: { x: { $ref: "#/x" } } }), false);
+});
+test("tool name toggles details and selecting another closes the previous tool", async () => {
+  const f = fixture(); f.info.allowed = true;
+  f.handlers["/mcp/servers/s1/tools"] = () => packet({ tools: [f.info, { ...f.info, name: "second" }] });
+  await f.ui.open(); await f.button("servers", "Tools").fire(); const rows = f.nodes["mcp-tools"].querySelectorAll("article");
+  assert.ok(rows.every((row) => row.querySelectorAll("div")[0].hidden));
+  await f.button("tools", "echo").fire(); assert.equal(f.button("tools", "echo").getAttribute("aria-expanded"), "true");
+  await f.button("tools", "second").fire(); assert.equal(rows[0].querySelectorAll("div")[0].hidden, true);
+  await f.button("tools", "second").fire(); assert.equal(f.nodes["mcp-call-panel"].hidden, true); assert.equal(f.nodes["mcp-execute"].disabled, true);
+});
+test("schema refresh invalidates previous form data and current permission display", async () => {
+  const f = fixture(); await autoReady(f); field(f, "text").value = "old value";
+  f.info.input_schema = { type: "object", properties: { timezone: { type: "string", default: "UTC" } } }; f.info.allowed = false;
+  await f.ui.refresh(); assert.equal(f.nodes["mcp-auto-form"].children.length, 0); assert.equal(f.nodes["mcp-execute"].disabled, true);
+  await f.button("servers", "Tools").fire(); await f.button("tools", "echo").fire();
+  assert.equal(field(f, "text"), undefined); assert.equal(field(f, "timezone").value, "UTC"); assert.equal(f.nodes["mcp-execute"].disabled, true);
+  assert.equal(calls(f, "/approve").length, 0);
+});
+test("general and per-tool Help show safe descriptions, required inputs and examples", async () => {
+  const f = fixture(); await f.ui.open(); const before = f.requests.length;
+  await f.nodes["mcp-help"].fire(); assert.equal(f.nodes["mcp-help-dialog"].open, true); assert.match(f.nodes["mcp-help-content"].textContent, /120 seconds/);
+  await f.nodes["mcp-help-close"].fire(); assert.equal(f.nodes["mcp-help-dialog"].open, false); assert.equal(f.requests.length, before);
+  f.info.description = "<script>not executed</script>"; f.info.input_schema.required = ["text"];
+  await f.button("servers", "Tools").fire();
+  assert.equal(f.nodes["mcp-argument-help"].disabled, true);
+  assert.equal(f.nodes["mcp-tools"].querySelectorAll("button").filter((item) => item.textContent === "?").length, 0);
+  await f.button("tools", "echo").fire(); await f.nodes["mcp-argument-help"].fire();
+  assert.match(f.nodes["mcp-help-content"].textContent, /Required arguments: text/); assert.match(f.nodes["mcp-help-content"].textContent, /Example only/);
+  assert.equal(f.nodes["mcp-help-content"].querySelectorAll("script").length, 0);
+});
+test("execution presents a text summary with full JSON collapsed", async () => {
+  const f = fixture(); await f.ready(); await f.nodes["mcp-execute"].fire();
+  assert.equal(f.nodes["mcp-result-summary"].textContent, "echo result"); assert.equal(f.nodes["mcp-result-details"].open, false);
+  assert.match(f.nodes["mcp-result"].textContent, /content/);
+});
+const requestId = "a".repeat(32);
+const requestRecord = { request_id: requestId, profile_id: "local-" + requestId, status: "pending_local_approval", approval_command: [".\\.venv\\Scripts\\python.exe", "scripts\\approve_mcp_profile.py", requestId] };
+const newProfile = async (f) => {
+  await f.ui.open(); await f.nodes["mcp-add"].fire(); f.nodes["mcp-registration-mode"].value = "new"; await f.nodes["mcp-registration-mode"].fire("change");
+  f.nodes["mcp-name"].value = "Time test"; f.nodes["mcp-transport"].value = "stdio"; f.nodes["mcp-executable"].value = "F:\\MCP\\python.exe";
+  f.nodes["mcp-launch-arguments"].value = "-m\nmcp_server_time\n--local-timezone=Asia/Seoul";
+  f.handlers["/mcp/profile-requests"] = () => packet({ request: requestRecord }, 201);
+};
+test("new-profile proposal cannot register or start before local approval", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  assert.deepEqual(calls(f, "/profile-requests")[0].data.arguments, ["-m", "mcp_server_time", "--local-timezone=Asia/Seoul"]);
+  assert.match(f.nodes["mcp-local-approval"].textContent, /approve_mcp_profile/); assert.equal(f.nodes["mcp-executable"].disabled, true);
+  f.handlers["/mcp/profile-requests/" + requestId] = () => packet({ request: requestRecord });
+  await f.nodes["mcp-register"].fire("submit");
+  assert.match(f.nodes["mcp-register-message"].textContent, /still pending/);
+  assert.equal(f.requests.filter((r) => r.url === "/mcp/servers" && r.options.method === "POST").length, 0);
+  assert.equal(calls(f, "/start").length, 0);
+});
+test("locally approved profile uses the existing register API and no automatic Start", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  f.handlers["/mcp/profile-requests/" + requestId] = () => packet({ request: { ...requestRecord, status: "approved" } });
+  await f.nodes["mcp-register"].fire("submit");
+  assert.deepEqual(f.requests.find((r) => r.url === "/mcp/servers" && r.options.method === "POST").data, { profile_id: requestRecord.profile_id, name: "Time test" });
+  assert.equal(f.nodes["mcp-dialog"].open, false); assert.equal(calls(f, "/start").length, 0);
+});
+test("cancel new-profile review never submits a proposal", async () => {
+  const f = fixture(); await newProfile(f); f.confirm(false); await f.nodes["mcp-register"].fire("submit");
+  assert.equal(calls(f, "/profile-requests").length, 0);
+});
+test("cancelling a queued profile removes only that proposal", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  f.handlers["/mcp/profile-requests/" + requestId] = () => packet({ status: "cancelled" });
+  await f.nodes["mcp-cancel"].fire(); assert.equal(f.nodes["mcp-dialog"].open, false);
+  assert.ok(f.requests.some((r) => r.url.endsWith(requestId) && r.options.method === "DELETE"));
+  assert.equal(f.requests.filter((r) => r.url.startsWith("/mcp/servers") && r.options.method === "DELETE").length, 0);
+});
+test("new-profile validation errors stay visible without bypassing owner approval", async () => {
+  const f = fixture(); await newProfile(f);
+  f.handlers["/mcp/profile-requests"] = () => packet({ error: { code: "mcp_invalid_execution", message: "shell prohibited" } }, 400);
+  await f.nodes["mcp-register"].fire("submit"); assert.match(f.nodes["mcp-register-message"].textContent, /shell prohibited/);
+  assert.equal(f.nodes["mcp-dialog"].open, true); assert.equal(calls(f, "/approve").length, 0);
+});
+test("schema editor bounds depth and field count and rejects unsupported vocabulary", async () => {
+  assert.equal(schemaEditor.supported({ type: "object", additionalProperties: { type: "string" } }), false);
+  assert.equal(schemaEditor.supported({ type: "object", allOf: [] }), false);
+  const properties = {}; for (let i = 0; i < 61; i += 1) properties["p" + i] = { type: "string" };
+  assert.equal(schemaEditor.supported({ type: "object", properties }), false);
+});
+test("schema validator counts Unicode code points and finite numbers", async () => {
+  assert.equal(schemaEditor.validate({ type: "string", maxLength: 1 }, "😀"), "😀");
+  assert.throws(() => schemaEditor.validate({ type: "string", maxLength: 1 }, "😀가"));
+  for (const number of [NaN, Infinity, -Infinity]) assert.throws(() => schemaEditor.validate({ type: "number" }, number));
+});
+test("prototype-shaped property names remain own JSON properties", async () => {
+  const definition = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","default":"safe"}},"required":["__proto__"]}');
+  const container = new Element("div"); const form = schemaEditor.render({ createElement: (tag) => new Element(tag) }, container, definition);
+  const value = form.read(); assert.equal(Object.prototype.hasOwnProperty.call(value, "__proto__"), true);
+  assert.equal(value.__proto__, "safe"); assert.equal({}.safe, undefined);
+});
+test("schema auto fields respect required/default and optional boolean false", async () => {
+  const container = new Element("div"), form = schemaEditor.render({ createElement: (tag) => new Element(tag) }, container,
+    { type: "object", properties: { flag: { type: "boolean", default: false }, omitted: { type: "string" } } });
+  assert.deepEqual(form.read(), { flag: false }); form.setDisabled(true);
+  assert.ok(container.querySelectorAll("input").every((input) => input.disabled));
+});
+test("array item validation and object unknown-field rules are enforced", async () => {
+  assert.throws(() => schemaEditor.validate({ type: "array", items: { type: "integer" } }, [1.5]));
+  assert.throws(() => schemaEditor.validate({ type: "object", properties: {}, additionalProperties: false }, { extra: true }));
+});
+test("enum choices preserve numeric and boolean values instead of strings", async () => {
+  const container = new Element("div"), form = schemaEditor.render({ createElement: (tag) => new Element(tag) }, container,
+    { type: "object", properties: { value: { type: "number", enum: [0, 2], default: 0 } } });
+  assert.deepEqual(form.read(), { value: 0 });
+});
+test("raw JSON cannot silently convert overflowing numbers to null", async () => {
+  const f = fixture(); await f.ready(); f.nodes["mcp-arguments"].value = '{"text":1e309}';
+  await f.nodes["mcp-execute"].fire(); assert.equal(calls(f, "/approve").length, 0); assert.match(f.nodes["mcp-message"].textContent, /finite numbers/);
 });
 (async () => {
   let failures = 0;

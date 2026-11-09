@@ -16,6 +16,7 @@ from .errors import MCPServiceError
 from .manager import MCPManager
 from .models import MCPRuntimeError, ServerConfig, ServerState, ServerStatus
 from .registry import DEFAULT_MCP_DB_PATH, MCPRegistry, canonical_json, config_data, fingerprint
+from .profile_requests import ProfileRequests
 
 
 def public_status(status):
@@ -71,6 +72,10 @@ class MCPService:
             try:
                 if configs is None:
                     manifest = os.environ.get("LOCAL_AI_MCP_APPROVALS")
+                    if not manifest:
+                        local_manifest = self.database_path.parent / "mcp_approved_profiles.json"
+                        if local_manifest.exists():
+                            manifest = str(local_manifest)
                     entries = []
                     if manifest:
                         path = Path(manifest)
@@ -134,6 +139,33 @@ class MCPService:
         if profile is None:
             raise MCPServiceError("mcp_execution_not_approved", "Select an approved local execution profile.", 403)
         return self._view(self.registry.create(profile_id, name, config_data(profile)))
+
+    def profile_requests(self):
+        self._open()
+        if self._approved_configs is not None:
+            raise MCPServiceError("mcp_profile_management_disabled", "This Controller uses fixed in-memory profiles.", 403)
+        return ProfileRequests(self.database_path.parent / "mcp_profile_requests",
+                               os.environ.get("LOCAL_AI_MCP_APPROVALS") or self.database_path.parent / "mcp_approved_profiles.json")
+
+    def refresh_profiles(self):
+        with self._lock:
+            if self._approved_configs is None:
+                self._profiles = None
+            return self.profiles()
+
+    def propose_profile(self, name, transport, executable, arguments):
+        requests = self.profile_requests()
+        with self._lock:
+            return requests.view(requests.create(name, transport, executable, arguments), False)
+
+    def profile_request_status(self, request_id):
+        requests = self.profile_requests()
+        record = requests.read(request_id)
+        with self._lock:
+            self._profiles = None  # Explicitly reload only owner-written approvals; never trust a web proposal.
+            profile = self.profiles().get(record["profile_id"])
+            approved = profile is not None and config_data(profile) == {key: record[key] for key in ("executable", "args", "cwd")}
+        return requests.view(record, approved)
 
     @contextmanager
     def _guard(self, server_id, kind="action"):

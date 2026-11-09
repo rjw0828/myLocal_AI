@@ -27,6 +27,28 @@
 .mcp-manager td { overflow-wrap: anywhere; }
 .mcp-tool-card { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; }
 .mcp-tool-card h4 { margin: 0 0 8px; }
+.mcp-tools-layout { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 1.4fr); gap: 16px; }
+.mcp-tool-list { max-height: 520px; overflow: auto; min-width: 0; }
+.mcp-tool-workspace { min-width: 0; }
+.mcp-arguments-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mcp-arguments-header h4 { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.mcp-arguments-header button { flex-shrink: 0; }
+.mcp-tool-toggle { width: calc(100% - 6px); text-align: left; overflow-wrap: anywhere; font-weight: 700; }
+.mcp-tool-toggle[aria-expanded="true"] { background: var(--accent-pale); border-color: var(--accent); }
+.mcp-tool-card { padding: 8px; }
+.mcp-tool-details { padding: 8px; font-size: .82rem; }
+.mcp-tool-details p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-manager details summary { cursor: pointer; font-size: .8rem; margin: 8px 0; }
+.mcp-auto-form fieldset { margin: 8px 0; padding: 9px; min-width: 0; border: 1px solid var(--line); border-radius: 7px; }
+.mcp-auto-form legend, .mcp-auto-form small { font-size: .78rem; overflow-wrap: anywhere; }
+.mcp-auto-form small { display: block; color: var(--muted); margin-bottom: 6px; }
+.mcp-auto-form label, .mcp-raw-toggle { display: block; font-size: .78rem; }
+.mcp-manager input[type="checkbox"] { width: auto; }
+.mcp-result-summary { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .84rem; max-height: 240px; overflow: auto; }
+.mcp-dialog textarea { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 7px; font-family: Consolas, monospace; }
+.mcp-dialog #mcp-new-profile label { display: grid; gap: 5px; margin: 10px 0; }
+.mcp-local-approval { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; font-size: .76rem; }
+@media (max-width: 900px) { .mcp-tools-layout { grid-template-columns: minmax(0, 1fr); } .mcp-tool-list { max-height: 320px; } }
 .mcp-manager pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .78rem; }
 .mcp-result { padding: 12px; background: var(--surface-soft); border-radius: 8px; }
 .mcp-manager textarea { display: block; margin: 7px 0; font-family: Consolas, monospace; }

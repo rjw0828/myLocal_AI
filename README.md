@@ -12,12 +12,12 @@ MCP-2 검증 결과: 기존 249개에 41개를 추가하여 총 290개(Python 21
 
 ### MCP-3 — MCP Server Manager
 
-B의 **AI Serve Locals**를 열고 Ollama 관리 아래로 스크롤하면 MCP Server Manager가 표시됩니다. 등록 목록은 이름, 승인 프로필 설명, stdio 연결 방식, 현재 런타임 상태를 표시합니다. 기존 MCP-2에는 독립적인 서버 설명 필드가 없어 승인 프로필 ID를 설명으로 표시합니다. 이 UI는 실행 파일이나 명령을 편집하지 않습니다.
+B의 **AI Serve Locals**를 열고 Ollama 관리 아래로 스크롤하면 MCP Server Manager가 표시됩니다. 등록 목록은 이름, 승인 프로필 설명, stdio 연결 방식, 현재 런타임 상태를 표시합니다. 기존 MCP-2에는 독립적인 서버 설명 필드가 없어 승인 프로필 ID를 설명으로 표시합니다. 새 실행 설정은 웹에서 제안할 수 있지만 별도 로컬 터미널 승인 전에는 등록·실행할 수 없습니다.
 
-1. 소유자가 검토한 `LOCAL_AI_MCP_APPROVALS` 파일을 기존 MCP-2 문서대로 준비하고 Controller를 재시작합니다. 헤더 오른쪽 Refresh MCP 옆의 **+ Add Server**를 누르면 등록 모달이 열립니다. 승인 프로필이 없으면 모달에 설정 안내를 표시하고 Register는 비활성화합니다. 운영 승인 파일을 Git에 추가하지 마세요.
+1. 소유자가 검토한 승인 파일을 기존 MCP-2 문서대로 준비하고 Controller를 재시작합니다. `start_app.bat`은 기존 `LOCAL_AI_MCP_APPROVALS` 값을 우선 사용하고, 값이 없을 때만 프로젝트의 `data/mcp_approved_profiles.json`이 있으면 자동 연결합니다. 둘 다 없으면 기존처럼 승인 프로필 없이 시작합니다. 명시한 경로가 잘못돼도 다른 파일로 조용히 대체하지 않습니다. 헤더 오른쪽 Refresh MCP 옆의 **+ Add Server**를 누르면 등록 모달이 열립니다. 승인 프로필이 없으면 모달에 설정 안내를 표시하고 Register는 비활성화합니다. 운영 승인 파일을 Git에 추가하지 마세요.
 2. 모달에서 Approved profile과 선택적인 Server name을 입력한 뒤 Register를 누릅니다. 등록 성공 시 목록 갱신을 마치고 모달을 닫습니다. Cancel 또는 Esc로 등록 전 취소할 수 있고, 요청 처리 중에는 중복 제출/닫기를 막습니다. 등록 오류는 모달 안에 표시하며, 등록 후 목록 갱신만 실패했을 때는 재등록을 막고 Cancel 후 Refresh MCP로 재동기화합니다. 등록만으로 서버가 시작되지 않으며 Start를 명시적으로 눌러야 합니다.
-3. RUNNING 서버의 Tools를 눌러 설명과 입력 JSON Schema를 조회합니다. 도구는 기본 Blocked이며 Allow tool 확인 후 Select tool을 누를 수 있습니다. Block tool로 다시 차단할 수 있습니다.
-4. JSON object 인수를 입력하고 Approve & Run once를 누릅니다. 서버·도구·정확한 인수를 확인해야 `/approve`와 `/call`이 각각 1회 실행됩니다. 일회용 토큰은 로그나 영구 저장소에 저장하지 않습니다.
+3. RUNNING 서버의 Tools를 누르면 왼쪽에 도구 이름 목록이 표시됩니다. 이름을 누르면 설명·권한·접힌 JSON Schema 상세가 열리고, 다시 누르면 닫힙니다. 다른 도구를 선택하면 이전 도구는 접힙니다. 도구는 기본 Blocked이며 Allow tool 확인 후 실행할 수 있습니다. Block tool로 다시 차단할 수 있습니다.
+4. 오른쪽 자동 폼에 인수를 입력하고 Approve & Run once를 누릅니다. 서버·도구·정확한 인수를 확인해야 `/approve`와 `/call`이 각각 1회 실행됩니다. 일회용 토큰은 로그나 영구 저장소에 저장하지 않습니다. 결과는 텍스트 요약을 먼저 표시하고 전체 응답은 Raw JSON response에서 펼칩니다.
 5. 실행 결과는 A의 MCP 결과창에 안전한 텍스트로 표시하고 F에는 진행·완료·오류·시간만 기록합니다. Chat/Session/Voice 기능과 데이터는 별도입니다.
 6. 시간 초과 시 자동 재시도하지 않습니다. operation ID가 있으면 Check pending result로 늦은 결과를 조회합니다. 완료를 확정할 수 없으면 해당 서버 호출을 차단하고 명시적 Stop 성공 후 Start를 사용합니다. 브라우저 요청 취소는 서버 부작용의 롤백이 아닙니다. 같은 탭의 새로고침에도 미확인 호출 표식을 sessionStorage로 보존합니다.
 7. 등록 삭제는 STOPPED 상태에서 확인 후 가능합니다. Stop은 진행 중 도구의 부작용을 되돌리지 않습니다. Refresh MCP는 현재 상태를 다시 읽고 Tools 재검색을 요구합니다. 관리 화면을 떠나는 동안 승인만 끝난 요청은 호출하지 않고, 이미 전송된 호출의 늦은 결과는 다른 화면에 적용하지 않습니다.
@@ -25,6 +25,22 @@ B의 **AI Serve Locals**를 열고 Ollama 관리 아래로 스크롤하면 MCP S
 UI 이벤트 검증은 실제 `mcp-ui.js`를 DOM/Fetch 모형으로 실행하며 실제 Edge의 스크롤·포커스·확인창 동작 검증을 대신하지 않습니다. 실제 SDK stdio 검증은 임시 DB와 기존 echo/add 테스트 서버만 사용합니다. 신규 패키지나 운영 프로필·DB는 생성하지 않습니다.
 
 본문은 **MCP Servers**와 **Selected MCP Tools** 두 영역이며 두 제목은 같은 폰트 크기·굵기·스타일을 사용합니다. 서버 미선택 안내는 제목 아래 작은 문구로 표시하고, Tools 조회 후에는 해당 서버 이름을 안내 문구로 표시합니다. 등록 모달은 A 영역의 스크롤에 잘리지 않도록 body 아래의 네이티브 dialog로 배치합니다. 실제 Edge에서 모달 포커스 이동·Esc/Cancel·작은 창 스크롤과 두 제목의 시각적 일치를 확인하세요.
+
+### MCP UX 확장 — 로컬 승인과 자동 인수 폼
+
+`+ Add Server`의 Registration mode에서 기존 승인 프로필 또는 Create new local profile을 선택합니다. 새 프로필은 Server name, stdio, 실행 파일의 절대 경로(바깥 따옴표 없이), Arguments를 입력합니다. Arguments는 **한 줄이 한 인수**이며 셸처럼 분리/치환하지 않습니다. 빈 줄은 생략하고, 개별 인수 내부의 공백은 그대로 보존합니다. 줄바꿈/빈 문자열 자체를 인수로 전달하는 고급 실행 설정은 이 입력 방식에서 지원하지 않습니다.
+
+Request local approval에서 명령을 확인하면 실행하지 않는 제안 파일만 생성됩니다. 모달에 표시된 명령을 프로젝트 폴더의 로컬 PowerShell에서 실행하세요. `scripts/approve_mcp_profile.py`가 정확한 실행 파일·인수·작업 폴더와 저장 파일을 표시하고 `APPROVE <request-id>`를 직접 입력해야 승인됩니다. 이 스크립트는 프로그램을 실행하지 않습니다. 모달로 돌아와 Check approval & Register를 누르면 기존 등록 API로 STOPPED 서버가 생성됩니다. JSON 편집·환경 변수 지정·Controller 재시작은 필요 없습니다. 기존 승인 파일과 프로필은 보존합니다.
+
+이 별도 터미널 단계는 웹 확인창으로 대체할 수 없습니다. 기존 헤더/Origin 검사는 OS 관리자 인증이 아니며, HTTP만으로 새 실행 설정을 스스로 승인하지 못하도록 분리했습니다. 여기서 로컬 관리자는 승인 파일을 관리할 권한이 있는 PC 소유자를 뜻하며 Windows UAC 인증/권한 상승을 구현한 것은 아닙니다. 완전한 웹 전용 관리자 등록은 별도 신뢰 채널/인증 설계가 필요합니다.
+
+승인 파일은 명시한 `LOCAL_AI_MCP_APPROVALS`를 우선 사용하고, 없으면 MCP DB 폴더의 `mcp_approved_profiles.json`을 사용합니다(기본 `data/`). Refresh MCP와 승인 상태 확인은 로컬 소유자가 쓴 파일을 다시 읽습니다. 제안은 같은 폴더 아래 `mcp_profile_requests/`에 최대 64개, 유효 시간 24시간으로 보관합니다. Cancel은 해당 제안만 삭제하며 이미 승인된 프로필은 취소하지 않습니다. 완료된 등록은 제안을 정리하고, 서버 Delete도 승인 파일 자체를 지우지 않습니다. 승인 도중에는 독점 `.lock`과 임시 파일/원자 교체를 사용합니다. 비정상 종료로 남은 lock은 자동 탈취하지 않으므로 다른 승인 작업 종료를 확인한 뒤 로컬 관리자가 점검해야 합니다. 승인 파일을 동시에 수동 편집하지 마세요. 설정·제안·인수는 평문 로컬 자료이고 Git에서 제외됩니다.
+
+자동 폼은 string/number/integer/boolean/primitive enum, required/default, 중첩 객체(최대 깊이 4), 배열(JSON 배열 입력)을 지원합니다. 선택적 필드는 Include를 켰을 때만 전송하고 기본값은 자동 포함합니다. 안전한 정수 범위·유한 숫자·기본 길이/범위를 검사하며 최종 스키마 검증은 서버가 수행합니다. pattern/multipleOf 같은 일부 세부 제약은 서버 검증에 맡깁니다. `$ref`, oneOf/anyOf/allOf, nullable 타입 조합 등 미지원 스키마와 60개를 넘는 폼 노드는 Raw JSON으로 전환합니다. 외부 참조를 내려받거나 JavaScript 정규식으로 서버 패턴을 실행하지 않습니다. Advanced Raw JSON을 직접 켤 수 있으며 자동 폼으로 돌아가면 현재 스키마/기본값으로 재구성합니다. 스키마를 다시 조회하면 이전 입력은 초기화되고 서버 권한도 스키마 fingerprint가 맞아야 유효합니다.
+
+Help?는 전체 사용 순서를, 도구의 ?는 설명·필수 인수·예시를 표시합니다. 예시는 정답/실행 보장이 아니므로 검토 후 사용합니다. 작은 창에서는 좌우 도구/인수 레이아웃이 세로로 전환됩니다. 기존 120초 일회용 승인, 기본 거부, Timeout/불확실 상태의 자동 재시도 금지는 유지합니다. 실제 Edge의 모달/아코디언/포커스·작은 화면과 Time MCP의 timezone 기본값 폼은 사용자 수동 확인 항목입니다.
+
+UX 확장 검증(2026-11-10): 직전 328개(레이아웃 변경과 시작 배치 테스트 포함)를 유지하고 Python 로컬 승인 경계 16개와 JS 입력 폼/등록·실행 UI 22개를 추가했다. MCP quick 135개/5.80초, integration 151개/36.51초, full 366개(Python 238 + JS 128)/51.43초가 통과했다. 실제 로컬 CLI를 임시 파일에서 실행해 확인·취소·변조 거부·동시 쓰기·원자 저장 실패를 검증했다. DOM/Fetch 모형은 실제 Edge 검증을 대신하지 않는다. 별도 임시 DB에 기존 Time 프로필을 복사해 실제 stdio 연결, 실제 스키마의 자동 폼 지원 및 `Asia/Seoul` 기본 인수, 승인 후 시간 조회와 정상 종료를 확인했다. 운영 DB 두 개와 기존 승인 파일의 SHA-256은 유지됐다. 패키지·모델 변경과 Commit/Push는 수행하지 않았다.
 
 MCP-3 자동 검증: 기존 290개를 유지하고 Flask 화면/정적 파일 2개와 UI 이벤트 23개를 추가했다. quick MCP 84개(3.78초), integration MCP 100개(35.27초), full 315개(Python 216 + JavaScript 99, 56.00초)가 통과했다. JavaScript/PowerShell 문법과 `git diff --check`도 통과했고 운영 Session DB SHA-256은 변경되지 않았다. 실제 Edge 및 서드파티 MCP 서버 연결은 이번 자동 검증에 포함하지 않았다.
 
