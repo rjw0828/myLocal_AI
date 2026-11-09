@@ -7,6 +7,29 @@
   --shadow: 0 12px 32px rgba(24, 54, 40, .07);
   font-family: Inter, "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
 }
+.mcp-manager { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--line); }
+.mcp-manager h2 { font-size: 1.2rem; }
+.mcp-header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.mcp-area { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.mcp-area-title { margin: 0 0 10px; font-size: 1rem; font-weight: 750; font-style: normal; line-height: 1.3; letter-spacing: normal; color: var(--ink); }
+.mcp-area-hint { margin: 8px 0; color: var(--muted); font-size: .8rem; line-height: 1.5; overflow-wrap: anywhere; }
+.mcp-dialog { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 24px; overflow: auto; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.mcp-dialog::backdrop { background: rgba(17, 29, 27, .45); }
+.mcp-dialog h2 { margin: 0 0 18px; font-size: 1.2rem; }
+.mcp-dialog .mcp-register { display: grid; gap: 12px; }
+.mcp-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.mcp-register { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.mcp-register label { display: grid; gap: 5px; flex: 1 1 200px; min-width: 0; font-size: .8rem; }
+.mcp-manager input, .mcp-manager select, .mcp-manager textarea, .mcp-dialog input, .mcp-dialog select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.mcp-manager button, .mcp-dialog button { padding: 7px 10px; margin: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); cursor: pointer; font-size: .78rem; }
+.mcp-manager button:disabled, .mcp-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.mcp-manager button:focus-visible, .mcp-dialog button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mcp-manager td { overflow-wrap: anywhere; }
+.mcp-tool-card { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 9px; }
+.mcp-tool-card h4 { margin: 0 0 8px; }
+.mcp-manager pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .78rem; }
+.mcp-result { padding: 12px; background: var(--surface-soft); border-radius: 8px; }
+.mcp-manager textarea { display: block; margin: 7px 0; font-family: Consolas, monospace; }
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
 body { margin: 0; background: #edf2ed; color: var(--ink); }

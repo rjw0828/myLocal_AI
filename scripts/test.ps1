@@ -46,7 +46,7 @@ function Get-InferredModules {
     $selected = New-Object System.Collections.Generic.List[string]
     foreach ($path in $Paths) {
         switch -Regex ($path) {
-            '^(mcp_manager/|tests/test_mcp_)' { $selected.Add("mcp"); continue }
+            '^(mcp_manager/|tests/test_mcp_|static/js/mcp-ui\.js)' { $selected.Add("mcp"); continue }
             '^(storage/|tests/test_sqlite_store\.py)' { $selected.Add("storage"); continue }
             '^tests/(test_sessions|test_delete_all)\.py' { $selected.Add("sessions"); continue }
             '^(voice/|tests/test_(stt|tts)_api\.py)' { $selected.Add("voice"); continue }
@@ -82,7 +82,7 @@ function Get-TestPlan {
         return [pscustomobject]@{
             DiscoverPython = $true
             Python = @()
-            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js")
+            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js", "tests/test_mcp_ui.js")
         }
     }
 
@@ -119,6 +119,7 @@ function Get-TestPlan {
                 }
             }
             "ui" {
+                Add-UniqueItem $javascript "tests/test_mcp_ui.js"
                 Add-UniqueItem $javascript "tests/test_voice_turn.js"
                 Add-UniqueItem $javascript "tests/test_voice_ui.js"
                 if ($SelectedMode -eq "integration") {
@@ -132,6 +133,8 @@ function Get-TestPlan {
                 }
             }
             "mcp" {
+                Add-UniqueItem $javascript "tests/test_mcp_ui.js"
+                Add-UniqueItem $python "tests/test_mcp_console.py"
                 Add-UniqueItem $python "tests/test_mcp_runtime.py"
                 Add-UniqueItem $python "tests/test_mcp_registry.py"
                 Add-UniqueItem $python "tests/test_mcp_api.py"

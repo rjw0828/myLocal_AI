@@ -40,7 +40,7 @@ The README currently documents these commands; re-read it before execution:
 .\scripts\test.ps1 -Mode full
 ```
 
-`quick` and `integration` infer modules from uncommitted paths when `-Module` is omitted and use a safe core fallback when inference is inconclusive. Supported module names are `app`, `sessions`, `storage`, `voice`, `ui`, `ollama`, and `mcp`. `full` deliberately rejects `-Module` and runs Python discovery plus both JavaScript suites so that a scoped option cannot silently omit regression tests. The runner stores detailed logs under the operating system temporary directory and prints a compact result. A zero-test run, an omitted scheduled runner, or a nonzero child exit is a failure.
+`quick` and `integration` infer modules from uncommitted paths when `-Module` is omitted and use a safe core fallback when inference is inconclusive. Supported module names are `app`, `sessions`, `storage`, `voice`, `ui`, `ollama`, and `mcp`. The MCP UI event suite is included in both `mcp` and `ui` selections. `full` deliberately rejects `-Module` and runs Python discovery plus the voice-turn, voice-UI, and MCP-UI JavaScript suites so that a scoped option cannot silently omit regression tests. The runner stores detailed logs under the operating system temporary directory and prints a compact result. A zero-test run, an omitted scheduled runner, or a nonzero child exit is a failure.
 
 The underlying commands remain available for diagnosis:
 
@@ -48,6 +48,7 @@ The underlying commands remain available for diagnosis:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 node tests/test_voice_turn.js
 node tests/test_voice_ui.js
+node tests/test_mcp_ui.js
 ```
 
 The README records a historical v1.0 baseline of 215 tests (139 Python and 76 JavaScript/voice-model tests). This is context only, not a fixed threshold or proof of the current test inventory.

@@ -1,6 +1,6 @@
 # Local AI Lab — Base Framework v1.0
 
-## MCP-2 개발 브랜치 추가 기능
+## MCP-1/2/3 개발 브랜치 추가 기능
 
 Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP-2 Registry/Flask API를 추가했습니다. MCP 전용 DB는 `data/mcp_registry.sqlite3`이며 기존 Session DB와 스키마는 변경하지 않습니다. 로컬 소유자가 승인한 stdio 실행 프로필만 등록하고, 도구별 기본 거부 권한과 인수에 묶인 일회용 승인 토큰으로 수동 호출합니다. 재시작 시 등록·권한만 복원하고 서버는 자동 실행하지 않습니다.
 
@@ -8,7 +8,31 @@ Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP
 
 MCP-2 검증 결과: 기존 249개에 41개를 추가하여 총 290개(Python 214, JavaScript 76)가 통과했습니다. 신규 실제 SDK/Flask stdio 통합 5개는 등록·수동 호출, 별도 Python 프로세스의 등록/권한 복원과 자동 실행 없음, Timeout, Stop 및 종료 시 자식 프로세스 정리를 확인합니다. 운영 Session DB는 검증 전후 SHA-256이 동일합니다.
 
-실행 승인 파일, API 경로·요청 형식, Timeout/종료 정책과 테스트 범위는 [MCP-2 API 문서](mcp_manager/API.md)를 따릅니다. Control Console의 MCP UI, Streamable HTTP 및 LLM 자동 Tool Calling은 아직 구현하지 않았으며 STEP 8 전체 완료를 의미하지 않습니다. 기본 Flask 실행 명령과 기존 Session/Voice/Ollama 사용 방법은 아래와 같습니다.
+실행 승인 파일, API 경로·요청 형식, Timeout/종료 정책과 테스트 범위는 [MCP-2 API 문서](mcp_manager/API.md)를 따릅니다. MCP-3는 아래 관리 UI를 추가하며 Streamable HTTP 및 LLM 자동 Tool Calling은 미구현입니다. STEP 8 전체 완료를 의미하지 않습니다. 기본 Flask 실행 명령과 기존 Session/Voice/Ollama 사용 방법은 아래와 같습니다.
+
+### MCP-3 — MCP Server Manager
+
+B의 **AI Serve Locals**를 열고 Ollama 관리 아래로 스크롤하면 MCP Server Manager가 표시됩니다. 등록 목록은 이름, 승인 프로필 설명, stdio 연결 방식, 현재 런타임 상태를 표시합니다. 기존 MCP-2에는 독립적인 서버 설명 필드가 없어 승인 프로필 ID를 설명으로 표시합니다. 이 UI는 실행 파일이나 명령을 편집하지 않습니다.
+
+1. 소유자가 검토한 `LOCAL_AI_MCP_APPROVALS` 파일을 기존 MCP-2 문서대로 준비하고 Controller를 재시작합니다. 헤더 오른쪽 Refresh MCP 옆의 **+ Add Server**를 누르면 등록 모달이 열립니다. 승인 프로필이 없으면 모달에 설정 안내를 표시하고 Register는 비활성화합니다. 운영 승인 파일을 Git에 추가하지 마세요.
+2. 모달에서 Approved profile과 선택적인 Server name을 입력한 뒤 Register를 누릅니다. 등록 성공 시 목록 갱신을 마치고 모달을 닫습니다. Cancel 또는 Esc로 등록 전 취소할 수 있고, 요청 처리 중에는 중복 제출/닫기를 막습니다. 등록 오류는 모달 안에 표시하며, 등록 후 목록 갱신만 실패했을 때는 재등록을 막고 Cancel 후 Refresh MCP로 재동기화합니다. 등록만으로 서버가 시작되지 않으며 Start를 명시적으로 눌러야 합니다.
+3. RUNNING 서버의 Tools를 눌러 설명과 입력 JSON Schema를 조회합니다. 도구는 기본 Blocked이며 Allow tool 확인 후 Select tool을 누를 수 있습니다. Block tool로 다시 차단할 수 있습니다.
+4. JSON object 인수를 입력하고 Approve & Run once를 누릅니다. 서버·도구·정확한 인수를 확인해야 `/approve`와 `/call`이 각각 1회 실행됩니다. 일회용 토큰은 로그나 영구 저장소에 저장하지 않습니다.
+5. 실행 결과는 A의 MCP 결과창에 안전한 텍스트로 표시하고 F에는 진행·완료·오류·시간만 기록합니다. Chat/Session/Voice 기능과 데이터는 별도입니다.
+6. 시간 초과 시 자동 재시도하지 않습니다. operation ID가 있으면 Check pending result로 늦은 결과를 조회합니다. 완료를 확정할 수 없으면 해당 서버 호출을 차단하고 명시적 Stop 성공 후 Start를 사용합니다. 브라우저 요청 취소는 서버 부작용의 롤백이 아닙니다. 같은 탭의 새로고침에도 미확인 호출 표식을 sessionStorage로 보존합니다.
+7. 등록 삭제는 STOPPED 상태에서 확인 후 가능합니다. Stop은 진행 중 도구의 부작용을 되돌리지 않습니다. Refresh MCP는 현재 상태를 다시 읽고 Tools 재검색을 요구합니다. 관리 화면을 떠나는 동안 승인만 끝난 요청은 호출하지 않고, 이미 전송된 호출의 늦은 결과는 다른 화면에 적용하지 않습니다.
+
+UI 이벤트 검증은 실제 `mcp-ui.js`를 DOM/Fetch 모형으로 실행하며 실제 Edge의 스크롤·포커스·확인창 동작 검증을 대신하지 않습니다. 실제 SDK stdio 검증은 임시 DB와 기존 echo/add 테스트 서버만 사용합니다. 신규 패키지나 운영 프로필·DB는 생성하지 않습니다.
+
+본문은 **MCP Servers**와 **Selected MCP Tools** 두 영역이며 두 제목은 같은 폰트 크기·굵기·스타일을 사용합니다. 서버 미선택 안내는 제목 아래 작은 문구로 표시하고, Tools 조회 후에는 해당 서버 이름을 안내 문구로 표시합니다. 등록 모달은 A 영역의 스크롤에 잘리지 않도록 body 아래의 네이티브 dialog로 배치합니다. 실제 Edge에서 모달 포커스 이동·Esc/Cancel·작은 창 스크롤과 두 제목의 시각적 일치를 확인하세요.
+
+MCP-3 자동 검증: 기존 290개를 유지하고 Flask 화면/정적 파일 2개와 UI 이벤트 23개를 추가했다. quick MCP 84개(3.78초), integration MCP 100개(35.27초), full 315개(Python 216 + JavaScript 99, 56.00초)가 통과했다. JavaScript/PowerShell 문법과 `git diff --check`도 통과했고 운영 Session DB SHA-256은 변경되지 않았다. 실제 Edge 및 서드파티 MCP 서버 연결은 이번 자동 검증에 포함하지 않았다.
+
+2026-11-10 레이아웃 개선 검증: 모달/제목 구조 검사 1개와 모달 이벤트 검사 7개를 추가했다. MCP quick 92개/3.94초, MCP integration 108개/33.59초, UI quick 106개/0.77초가 통과했다. 모달 취소·Esc, 등록 성공 후 목록 갱신과 닫기, 오류 복구, 중복 제출 차단 및 제목 유지 동작을 검증했다. 이번 레이아웃 변경에서는 full을 재실행하지 않았으며 위 315개 결과는 최초 MCP-3 구현 시점의 기록이다. DOM/Fetch 모형과 Flask 렌더링 검증은 실제 Edge의 시각적 배치·포커스 검증과 구분한다.
+
+권장 명령은 개발 중 `.\scripts\test.ps1 -Mode quick -Module mcp`, 기능 완료 시 `-Mode integration -Module mcp`, 주요 체크포인트 및 Merge 전 `-Mode full`입니다. MCP UI 테스트는 MCP/ UI 모듈 선택과 full 모두에 포함됩니다. 개별 진단 명령은 `node tests/test_mcp_ui.js`입니다. 기존 Python 214개와 JS 76개는 그대로 보존합니다.
+
+Edge 수동 검증: Controller를 `.\.venv\Scripts\python.exe app.py`로 실행하고 Ctrl+F5 후 승인된 테스트 프로필의 등록→Start→Tools→Allow→인수 입력→실행 확인/취소→결과→Block→Stop→삭제를 확인합니다. 작은 창에서 A 내부 스크롤과 키보드 접근을 확인하고, 실행 중 메뉴 전환·Timeout·Refresh 이후 재실행 차단 및 Check pending result를 확인합니다. 이후 D/E/F의 기존 텍스트 Chat·Session 전환·수동/자동 Voice가 정상인지 확인합니다. 실제 Edge 및 서드파티 MCP 서버 검증은 별도 사용자 확인 항목입니다.
 
 ## 공식 기준 버전
 

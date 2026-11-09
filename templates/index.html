@@ -57,6 +57,27 @@
           </div>
           <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태 / 제어</th></tr></thead><tbody id="local-server-list"><tr data-server-id="local-ollama"><td>Local Ollama</td><td>127.0.0.1:11434</td><td id="server-model">qwen3.5:9b</td><td><button class="status-pill is-pending" id="server-toggle" type="button" disabled>확인 전</button></td></tr></tbody></table></div>
           <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. Ollama 종료는 다른 프로그램에서 진행 중인 작업도 중단할 수 있습니다.</p>
+          <section id="mcp-manager" class="mcp-manager" aria-labelledby="mcp-title">
+            <div class="section-title-row"><div><p class="kicker">LOCAL TOOLS · STDIO</p><h2 id="mcp-title">MCP Server Manager</h2></div><div class="mcp-header-actions"><button id="mcp-refresh" type="button" class="secondary-button">Refresh MCP</button><button id="mcp-add" type="button" class="secondary-button" aria-haspopup="dialog" aria-controls="mcp-dialog">+ Add Server</button></div></div>
+            <p class="notice">Only owner-approved local profiles can be registered. Servers never start automatically. Tool permission and approval for each call are separate. Stop does not undo tool side effects.</p>
+            <p id="mcp-message" role="status" aria-live="polite">Open AI Serve Locals to load MCP registrations.</p>
+            <section class="mcp-area" aria-labelledby="mcp-servers-title">
+              <h3 id="mcp-servers-title" class="mcp-area-title">MCP Servers</h3>
+              <div class="server-table-wrap"><table aria-labelledby="mcp-servers-title"><thead><tr><th>Name</th><th>Description / profile</th><th>Transport</th><th>Status</th><th>Actions</th></tr></thead><tbody id="mcp-servers"></tbody></table></div>
+            </section>
+            <section class="mcp-tools mcp-area" aria-labelledby="mcp-tools-title">
+              <h3 id="mcp-tools-title" class="mcp-area-title">Selected MCP Tools</h3>
+              <p id="mcp-tools-hint" class="mcp-area-hint">Select a running server to discover tools.</p>
+              <div id="mcp-tools"></div>
+              <div id="mcp-call-panel" hidden>
+                <label for="mcp-arguments">Tool arguments (JSON object, up to 64 KiB)</label>
+                <textarea id="mcp-arguments" rows="5" spellcheck="false">{}</textarea>
+                <button id="mcp-execute" type="button" disabled>Approve &amp; Run once</button>
+              </div>
+              <button id="mcp-operation" type="button" hidden>Check pending result</button>
+              <pre id="mcp-result" class="mcp-result" tabindex="0" aria-label="MCP execution result" aria-live="polite"></pre>
+            </section>
+          </section>
         </section>
       </main>
     </div>
@@ -120,11 +141,22 @@
       </section>
     </div>
   </div>
+  <dialog id="mcp-dialog" class="mcp-dialog" aria-labelledby="mcp-dialog-title">
+    <h2 id="mcp-dialog-title">Add MCP Server</h2>
+    <form id="mcp-register" class="mcp-register">
+      <label>Approved profile<select id="mcp-profile" required aria-label="Approved MCP profile" autofocus></select></label>
+      <p id="mcp-profile-message" class="mcp-area-hint" role="status">Only owner-approved local profiles can be registered.</p>
+      <label>Server name<input id="mcp-name" maxlength="128" placeholder="Optional display name" aria-label="MCP server name"></label>
+      <p id="mcp-register-message" class="mcp-area-hint" role="status" aria-live="polite"></p>
+      <div class="mcp-dialog-actions"><button id="mcp-cancel" type="button">Cancel</button><button id="mcp-submit" type="submit" disabled>Register</button></div>
+    </form>
+  </dialog>
   <div id="session-popup" class="session-popup" role="dialog" aria-label="Session List" hidden>
     <div class="session-popup-header"><span>Sessions</span><button id="delete-all-sessions" type="button">Delete All</button></div>
     <div id="session-popup-items" class="session-popup-items"></div>
   </div>
   <script src="{{ url_for('static', filename='js/voice-turn.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/mcp-ui.js') }}" defer></script>
 </body>
 </html>
