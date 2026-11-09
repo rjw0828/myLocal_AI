@@ -25,13 +25,24 @@ Verify that an authorized change preserves relevant myLocalAI behavior and repor
 1. Confirm the repository root, current branch, HEAD, and working tree. Do not alter Git state.
 2. Identify the changed files and trace their relevant callers, consumers, data flow, and module boundaries.
 3. Read the current `README.md`, test support, and relevant tests to identify the exact documented commands and existing test categories. Do not assume the release-era test count or command remains current.
-4. Map changed behavior to focused tests first. Include relevant edge cases such as invalid input, errors/timeouts, session isolation and reset, persistence/conflicts, cancellation/concurrency, and UI late/failure responses as applicable; do not run irrelevant checks.
+4. Map changed behavior to focused tests first. During development use `scripts/test.ps1 -Mode quick`; after a feature unit use `-Mode integration`; use `-Mode full` at major checkpoints and before an approved merge. Include relevant edge cases such as invalid input, errors/timeouts, session isolation and reset, persistence/conflicts, cancellation/concurrency, and UI late/failure responses as applicable; do not run irrelevant checks or repeatedly run the full suite without a checkpoint reason.
 5. Check the user's authorization and restrictions. Run only permitted checks. Do not install dependencies, start external services, use real models/devices, or perform destructive data operations unless expressly authorized.
 6. Report commands exactly, distinguish passed/failed/blocked/not run, and state whether service/model checks used mocks or live local resources. If a failure occurs, preserve its evidence and do not weaken or remove tests to make the suite pass.
 
 ## Project command references
 
 The README currently documents these commands; re-read it before execution:
+
+```powershell
+.\scripts\test.ps1 -Mode quick
+.\scripts\test.ps1 -Mode quick -Module mcp
+.\scripts\test.ps1 -Mode integration -Module mcp
+.\scripts\test.ps1 -Mode full
+```
+
+`quick` and `integration` infer modules from uncommitted paths when `-Module` is omitted and use a safe core fallback when inference is inconclusive. Supported module names are `app`, `sessions`, `storage`, `voice`, `ui`, `ollama`, and `mcp`. `full` deliberately rejects `-Module` and runs Python discovery plus both JavaScript suites so that a scoped option cannot silently omit regression tests. The runner stores detailed logs under the operating system temporary directory and prints a compact result. A zero-test run, an omitted scheduled runner, or a nonzero child exit is a failure.
+
+The underlying commands remain available for diagnosis:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -47,7 +58,7 @@ Summarize:
 
 - Change scope and affected behavior.
 - Selected tests/checks and why they cover the scope.
-- Exact commands and outcomes, or why a check was not run.
+- Exact runner mode/module, discovered test count and outcome, or why a check was not run. Use the external temporary log only for failure diagnosis; do not copy full successful logs into the report.
 - Edge cases covered and remaining regression risks.
 - Mock versus live Ollama/STT/TTS/device verification.
 
