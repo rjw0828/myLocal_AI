@@ -162,6 +162,18 @@
         <label>Arguments — one argument per line<textarea id="mcp-launch-arguments" rows="4" placeholder="-m&#10;mcp_server_time&#10;--local-timezone=Asia/Seoul" spellcheck="false"></textarea></label>
         <p class="mcp-area-hint">No shell parsing, downloads or automatic execution. Submit the exact configuration, then review it in a local terminal. New profiles require a server name.</p>
       </div>
+      <div id="mcp-approval-help" hidden>
+        <ol class="mcp-area-hint">
+          <li>파일 탐색기에서 start_app.bat이 있는 프로젝트 폴더를 열고, 주소창에 <code>powershell</code>을 입력한 뒤 Enter를 누르세요.</li>
+          <li>아래 <strong>승인 명령 복사</strong> 버튼을 누르고, 열린 PowerShell 창에 붙여넣은 뒤 Enter를 누르세요.</li>
+          <li>터미널에 표시된 실행 파일과 인수를 확인한 뒤 <strong>APPROVE 문구 복사</strong>를 누르세요. PowerShell이 승인 문구 입력을 기다릴 때 붙여넣고 Enter를 누르세요. 이 단계는 프로필을 저장하며 서버를 실행하지 않습니다.</li>
+          <li>승인 성공 후 이 화면으로 돌아와 <strong>승인 확인 및 등록</strong> 버튼을 누르세요.</li>
+        </ol>
+        <button id="mcp-copy-approval" type="button">승인 명령 복사</button>
+        <button id="mcp-copy-confirmation" type="button">APPROVE 문구 복사</button>
+        <code id="mcp-approval-confirmation"></code>
+        <span id="mcp-copy-status" class="mcp-area-hint" role="status" aria-live="polite"></span>
+      </div>
       <pre id="mcp-local-approval" class="mcp-local-approval" tabindex="0" hidden></pre>
       <p id="mcp-register-message" class="mcp-area-hint" role="status" aria-live="polite"></p>
       <div class="mcp-dialog-actions"><button id="mcp-cancel" type="button">Cancel</button><button id="mcp-submit" type="submit" disabled>Register</button></div>

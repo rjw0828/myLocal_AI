@@ -34,7 +34,8 @@ const packet = (data, status = 200) => ({ ok: status < 400, status, json: async 
 function fixture() {
   const html = fs.readFileSync(path.join(__dirname, "../templates/index.html"), "utf8"), nodes = {};
   for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*\bid="([^"]+)"/g)) nodes[match[2]] = new Element(match[1]);
-  const requests = [], prompts = [], handlers = {}, stored = new Map(), timers = [];
+  const requests = [], prompts = [], handlers = {}, stored = new Map(), timers = [], copied = [];
+  const clipboard = { writeText: async (value) => { copied.push(value); } };
   const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, status: { state: "RUNNING" } };
   const info = { name: "echo", description: "Returns text", input_schema: { type: "object", properties: { text: { type: "string" } } }, allowed: false };
   let registrations = [server], allowConfirmation = true;
@@ -56,7 +57,7 @@ function fixture() {
     throw new Error(`Unexpected mock endpoint: ${url}`);
   };
   const ui = createMCPConsole({ document: { getElementById: (id) => nodes[id], createElement: (tag) => new Element(tag) }, fetch,
-    confirm: (message) => { prompts.push(message); return allowConfirmation; },
+    confirm: (message) => { prompts.push(message); return allowConfirmation; }, clipboard,
     storage: { getItem: (key) => stored.get(key), setItem: (key, value) => stored.set(key, value) },
     setTimer: (callback) => { timers.push(callback); return timers.length; }, clearTimer() {} });
   const button = (container, label) => {
@@ -64,7 +65,7 @@ function fixture() {
     assert.ok(item, `Missing button: ${label}; status=${nodes["mcp-message"].textContent}`); return item;
   };
   const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); await button("tools", "Allow tool").fire(); await button("tools", "echo").fire(); nodes["mcp-raw-mode"].checked = true; await nodes["mcp-raw-mode"].fire("change"); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
-  return { ui, nodes, requests, prompts, handlers, server, info, stored, timers, button, ready, confirm: (value) => { allowConfirmation = value; } };
+  return { ui, nodes, requests, prompts, handlers, server, info, stored, timers, clipboard, copied, button, ready, confirm: (value) => { allowConfirmation = value; } };
 }
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
@@ -345,6 +346,79 @@ const newProfile = async (f) => {
   f.nodes["mcp-launch-arguments"].value = "-m\nmcp_server_time\n--local-timezone=Asia/Seoul";
   f.handlers["/mcp/profile-requests"] = () => packet({ request: requestRecord }, 201);
 };
+test("new-profile argument edge whitespace blocks submission and identifies original lines", async () => {
+  for (const value of ["index.js ", " index.js", "\tindex.js", "index.js\u00a0", "   "]) {
+    const f = fixture(); await newProfile(f);
+    f.nodes["mcp-launch-arguments"].value = "\n" + value + "\n--read-only";
+    await f.nodes["mcp-register"].fire("submit");
+    assert.match(f.nodes["mcp-register-message"].textContent, /Arguments lines 2: remove leading\/trailing whitespace/);
+    assert.equal(calls(f, "/profile-requests").length, 0);
+    assert.equal(f.nodes["mcp-dialog"].open, true);
+    assert.equal(f.nodes["mcp-launch-arguments"].value, "\n" + value + "\n--read-only");
+  }
+});
+test("new-profile internal spaces survive and corrected edge whitespace can be resubmitted", async () => {
+  const f = fixture(); await newProfile(f);
+  f.nodes["mcp-launch-arguments"].value = "F:\\Folder With Spaces\\index.js ";
+  await f.nodes["mcp-register"].fire("submit");
+  assert.equal(calls(f, "/profile-requests").length, 0);
+  f.nodes["mcp-launch-arguments"].value = "F:\\Folder With Spaces\\index.js\n\nhello world";
+  await f.nodes["mcp-register"].fire("submit");
+  assert.deepEqual(calls(f, "/profile-requests")[0].data.arguments, ["F:\\Folder With Spaces\\index.js", "hello world"]);
+});
+test("approval copy is explicit and copies only the quoted review command without approving", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  assert.equal(f.nodes["mcp-approval-help"].hidden, false);
+  assert.equal(f.copied.length, 0);
+  const count = f.requests.length;
+  await f.nodes["mcp-copy-approval"].fire();
+  assert.deepEqual(f.copied, [f.nodes["mcp-local-approval"].textContent]);
+  assert.match(f.copied[0], /^& '\.\\.venv/);
+  assert.match(f.nodes["mcp-copy-status"].textContent, /복사되었습니다/);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.nodes["mcp-submit"].textContent, "승인 확인 및 등록");
+});
+test("APPROVE copy uses the current request ID and never sends approval or Start", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  assert.equal(f.copied.length, 0);
+  assert.equal(f.nodes["mcp-approval-confirmation"].textContent, "APPROVE " + requestId);
+  const count = f.requests.length;
+  await f.nodes["mcp-copy-confirmation"].fire();
+  assert.deepEqual(f.copied, ["APPROVE " + requestId]);
+  assert.match(f.nodes["mcp-copy-status"].textContent, /APPROVE 문구가 복사되었습니다/);
+  assert.equal(f.requests.length, count);
+  assert.equal(calls(f, "/start").length, 0);
+});
+test("APPROVE copy failure can be retried and duplicate clipboard writes are blocked", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  f.clipboard.writeText = async () => { throw new Error("denied"); };
+  await f.nodes["mcp-copy-confirmation"].fire();
+  assert.match(f.nodes["mcp-copy-status"].textContent, /직접 선택/);
+  const pending = deferred(); let writes = 0;
+  f.clipboard.writeText = () => { writes += 1; return pending.promise; };
+  const copy = f.nodes["mcp-copy-confirmation"].fire();
+  await f.nodes["mcp-copy-approval"].fire("click", true);
+  assert.equal(writes, 1);
+  pending.resolve(); await copy;
+  assert.equal(f.nodes["mcp-copy-confirmation"].disabled, false);
+});
+test("clipboard rejection offers manual copy and keeps registration pending", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  f.clipboard.writeText = async () => { throw new Error("denied"); };
+  await f.nodes["mcp-copy-approval"].fire();
+  assert.match(f.nodes["mcp-copy-status"].textContent, /직접 선택/);
+  assert.equal(f.nodes["mcp-copy-approval"].disabled, false);
+  assert.equal(calls(f, "/start").length, 0);
+});
+test("late clipboard completion cannot report success after proposal cancellation", async () => {
+  const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
+  const pending = deferred(); f.clipboard.writeText = () => pending.promise;
+  const copy = f.nodes["mcp-copy-approval"].fire();
+  assert.equal(f.nodes["mcp-copy-approval"].disabled, true);
+  await f.nodes["mcp-cancel"].fire(); pending.resolve(); await copy;
+  assert.equal(f.nodes["mcp-approval-help"].hidden, true);
+  assert.doesNotMatch(f.nodes["mcp-copy-status"].textContent, /복사되었습니다/);
+});
 test("new-profile proposal cannot register or start before local approval", async () => {
   const f = fixture(); await newProfile(f); await f.nodes["mcp-register"].fire("submit");
   assert.deepEqual(calls(f, "/profile-requests")[0].data.arguments, ["-m", "mcp_server_time", "--local-timezone=Asia/Seoul"]);

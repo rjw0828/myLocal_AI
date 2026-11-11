@@ -119,6 +119,12 @@ contains no result/transcript content. Errors use the existing shape:
 ```
 
 `operation_id` is present only for an admitted operation. Typical statuses are
+New profile proposals reject leading/trailing argument whitespace with HTTP 400
+`mcp_argument_whitespace`, identifying 1-based argument positions. Internal
+spaces are preserved, never automatically trimmed. Existing approved profiles
+and runtime arguments are unchanged. The web form reports original line numbers
+before removing empty lines.
+
 400 invalid fields/arguments, 403 local/permission/approval denial, 404 missing
 server/tool/retained operation, 409 state/config conflict, 413 existing body limit,
 415 non-JSON write, 429 concurrent action/approval capacity, 502 upstream error or

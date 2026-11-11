@@ -2,16 +2,17 @@
 const mcpSchemaEditor = typeof module !== "undefined" && module.exports ? require("./mcp-schema.js") : window.MCPSchema;
 
 // Independent UI adapter. Runtime, execution approval and validation remain in MCP-2.
-function createMCPConsole({ document, fetch, confirm, storage, setTimer = setTimeout, clearTimer = clearTimeout }) {
+function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeof navigator !== "undefined" ? navigator.clipboard : null, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const node = (id) => document.getElementById(id);
   const ui = Object.fromEntries(["profile", "name", "add", "message", "servers", "tools", "tools-title",
     "call-panel", "arguments", "execute", "operation", "result", "refresh", "register", "dialog", "cancel", "submit",
     "profile-message", "register-message", "tools-hint", "registration-mode", "new-profile", "transport", "executable", "launch-arguments",
-    "local-approval", "auto-form", "raw-mode", "raw-panel", "form-notice", "selected-tool", "result-summary", "result-details",
+    "local-approval", "approval-help", "copy-approval", "copy-confirmation", "approval-confirmation", "copy-status", "auto-form", "raw-mode", "raw-panel", "form-notice", "selected-tool", "result-summary", "result-details",
     "help", "help-dialog", "help-title", "help-content", "help-close", "argument-help"].map((id) => [id, node(`mcp-${id}`)]));
   let servers = [], tools = [], selected = null, tool = null, busy = false, visible = false, generation = 0;
   let profileCount = 0, registrationSaved = false;
-  let argumentForm = null, profileRequest = null;
+  let argumentForm = null, profileRequest = null, copyingApproval = false;
+  const approvalCommand = (record) => "& " + record.approval_command.map((part) => "'" + part.replace(/'/g, "''") + "'").join(" ");
   const newProfileMode = () => ui["registration-mode"].value === "new";
   const pending = new Map();
   try {
@@ -47,7 +48,10 @@ function createMCPConsole({ document, fetch, confirm, storage, setTimer = setTim
     ui["new-profile"].hidden = !newProfileMode();
     for (const field of ["transport", "executable", "launch-arguments"]) ui[field].disabled = busy || !newProfileMode() || Boolean(profileRequest);
     ui.executable.required = newProfileMode();
-    ui.submit.textContent = profileRequest ? "Check approval & Register" : newProfileMode() ? "Request local approval" : "Register";
+    ui.submit.textContent = profileRequest ? "승인 확인 및 등록" : newProfileMode() ? "Request local approval" : "Register";
+    ui["approval-help"].hidden = !profileRequest;
+    ui["copy-approval"].disabled = busy || copyingApproval || !profileRequest;
+    ui["copy-confirmation"].disabled = busy || copyingApproval || !profileRequest;
     ui.arguments.disabled = busy;
     ui["argument-help"].disabled = busy || !tool;
     ui["raw-mode"].disabled = busy || !argumentForm?.supported;
@@ -220,6 +224,20 @@ function createMCPConsole({ document, fetch, confirm, storage, setTimer = setTim
     ui.dialog.showModal(); update();
   });
   ui.cancel.addEventListener("click", cancelRegistration);
+  for (const kind of ["copy-approval", "copy-confirmation"]) ui[kind].addEventListener("click", async () => {
+    if (!profileRequest || !visible || !ui.dialog.open || busy || copyingApproval) return;
+    const record = profileRequest;
+    copyingApproval = true; ui["copy-status"].textContent = ""; update();
+    try {
+      if (!clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await clipboard.writeText(kind === "copy-confirmation" ? `APPROVE ${record.request_id}` : approvalCommand(record));
+      if (profileRequest === record && ui.dialog.open) ui["copy-status"].textContent = kind === "copy-confirmation"
+        ? "APPROVE 문구가 복사되었습니다. 실행 설정을 확인한 뒤 PowerShell의 승인 입력란에 붙여넣고 Enter를 누르세요."
+        : "복사되었습니다. PowerShell에 붙여넣고 Enter를 누르세요.";
+    } catch (_) {
+      if (profileRequest === record && ui.dialog.open) ui["copy-status"].textContent = "복사하지 못했습니다. 아래 명령을 직접 선택해 복사한 뒤 PowerShell에 붙여넣으세요.";
+    } finally { copyingApproval = false; update(); }
+  });
   ui.dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     if (!busy) return cancelRegistration();
@@ -235,18 +253,23 @@ function createMCPConsole({ document, fetch, confirm, storage, setTimer = setTim
         if (!name) throw new Error("A server name is required for a new profile.");
         if (!profileRequest) {
           const executable = ui.executable.value.trim();
-          const args = ui["launch-arguments"].value.split(/\r?\n/).filter((item) => item !== "");
+          const lines = ui["launch-arguments"].value.split(/\r?\n/);
+          const whitespaceLines = lines.map((item, index) => item !== item.trim() ? index + 1 : null).filter((item) => item !== null);
+          if (whitespaceLines.length) throw new Error(`Arguments lines ${whitespaceLines.join(", ")}: remove leading/trailing whitespace. Internal spaces are allowed; values are not changed automatically.`);
+          const args = lines.filter((item) => item !== "");
           if (!executable) throw new Error("An absolute executable path is required.");
           if (!confirm(`Request local owner approval?\nName: ${name}\nTransport: ${ui.transport.value}\nExecutable: ${JSON.stringify(executable)}\nArguments: ${JSON.stringify(args)}\nNo command starts. Approval must happen in a separate local terminal.`)) return;
           const data = await request("/mcp/profile-requests", "POST", { name, transport: ui.transport.value, executable, arguments: args });
           profileRequest = data.request;
-          ui["local-approval"].textContent = "In a local PowerShell terminal, run and review:\n& " + profileRequest.approval_command.map((part) => "'" + part.replace(/'/g, "''") + "'").join(" ") + "\nThen click Check approval & Register. The command only reviews/persists this profile; it does not run it.";
+          ui["copy-status"].textContent = "";
+          ui["approval-confirmation"].textContent = `APPROVE ${profileRequest.request_id}`;
+          ui["local-approval"].textContent = approvalCommand(profileRequest);
           ui["local-approval"].hidden = false;
           ui["register-message"].textContent = "Pending local owner approval. Browser confirmation alone cannot approve execution.";
           return;
         }
         const data = await request(`/mcp/profile-requests/${encodeURIComponent(profileRequest.request_id)}`);
-        if (data.request.status !== "approved") throw new Error("Local owner approval is still pending. Run the displayed terminal review command first.");
+        if (data.request.status !== "approved") throw new Error("Local owner approval is still pending. 먼저 승인 명령을 복사해 PowerShell에서 실행하고 승인한 뒤 다시 눌러주세요.");
         profile = data.request.profile_id;
       }
       if (!profile) throw new Error("Select an approved profile.");

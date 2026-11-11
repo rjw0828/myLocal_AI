@@ -98,6 +98,25 @@ class MCPProfileRequestTests(unittest.TestCase):
                 self.assertEqual(self.propose(**fields).status_code, 400)
         self.assertFalse(self.queue.directory.exists())
 
+    def test_argument_edge_whitespace_rejected_without_writing_or_approving(self):
+        before = self.manifest.read_bytes()
+        for value in ("index.js ", " index.js", "\tindex.js", "index.js\u00a0", "   "):
+            with self.subTest(value=value):
+                response = self.propose(arguments=["-m", value])
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json["error"]["code"], "mcp_argument_whitespace")
+                self.assertIn("Arguments 2:", response.json["error"]["message"])
+        self.assertFalse(self.queue.directory.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertIsNone(self.service._runtime)
+
+    def test_internal_argument_spaces_are_preserved_exactly(self):
+        arguments = [r"F:\Folder With Spaces\index.js", "hello world", ""]
+        response = self.propose(arguments=arguments)
+        self.assertEqual(response.status_code, 201, response.json)
+        record = self.queue.read(response.json["request"]["request_id"])
+        self.assertEqual(record["args"], arguments)
+
     def test_existing_request_security_guards_apply_to_new_routes(self):
         self.assertEqual(self.client.post("/mcp/profile-requests", json={}).status_code, 403)
         self.assertEqual(self.client.get("/mcp/profile-requests/invalid", headers=HEADERS).status_code, 404)

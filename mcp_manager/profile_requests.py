@@ -53,6 +53,12 @@ class ProfileRequests:
             raise MCPServiceError("mcp_invalid_transport", "Only local stdio profiles are supported.")
         if not isinstance(arguments, list):
             raise MCPServiceError("mcp_invalid_input", "Arguments must be an array of separate strings.")
+        whitespace_arguments = [str(index + 1) for index, item in enumerate(arguments)
+                                if isinstance(item, str) and item != item.strip()]
+        if whitespace_arguments:
+            raise MCPServiceError("mcp_argument_whitespace",
+                                  "Arguments " + ", ".join(whitespace_arguments) +
+                                  ": remove leading/trailing whitespace. Internal spaces are allowed; values are not changed automatically.")
         request_id = uuid4().hex
         try:
             config = ServerConfig("local-" + request_id, executable, arguments)
