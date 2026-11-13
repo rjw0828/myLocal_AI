@@ -36,6 +36,8 @@ class Element {
   }
   click() { if (!this.disabled) this.dispatchEvent({ type: "click", stopPropagation() {} }); }
   focus() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; }
   getBoundingClientRect() { return { top: 500, left: 400, width: 140 }; }
   matches(selector) {
     if (selector.startsWith(".")) return this.className.split(" ").includes(selector.slice(1));
@@ -57,10 +59,7 @@ class BlobDouble {
   slice(start, end) { return new BlobDouble([this.bytes.slice(start, end)], { type: this.type }); }
   async arrayBuffer() { return Uint8Array.from(this.bytes).buffer; }
 }
-class AbortControllerDouble {
-  constructor() { this.signal = { aborted: false }; }
-  abort() { this.signal.aborted = true; }
-}
+class AbortControllerDouble extends AbortController {}
 const wav = Buffer.alloc(48);
 wav.write("RIFF"); wav.write("WAVE", 8);
 function packet(data, status = 200) {
@@ -69,7 +68,8 @@ function packet(data, status = 200) {
     text: async () => JSON.stringify(data), json: async () => data,
   };
 }
-async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [], savedDeleteAll = false } = {}) {
+async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [], savedDeleteAll = false,
+  savedStorage = null, initialHandlers = {} } = {}) {
   const root = path.resolve(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
   const nodes = {};
@@ -89,7 +89,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
   });
   const requests = [], audios = [], revoked = [], tracks = [], recorders = [], confirmations = [];
   const timers = new Map(); let timer = 0, domReady, confirm = true;
-  const handlers = {}, documentHandlers = {};
+  const handlers = { ...initialHandlers }, documentHandlers = {};
   const serverSessions = emptySessions ? [] : [{ session_id: "default", number: 1, title: "새 대화" }];
   const serverHistories = new Map(emptySessions ? [] : [["default", []]]);
   for (const detail of extraSessions) { serverSessions.push(detail); serverHistories.set(detail.session_id, []); }
@@ -117,7 +117,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
     removeAttribute() {}
     load() {}
   }
-  const values = new Map();
+  const values = new Map(savedStorage || []);
   if (savedSelection) values.set("local-ai-selected-session", savedSelection);
   if (savedDeleteAll) values.set("local-ai-delete-all-uncertain", "true");
   const window = {
@@ -181,12 +181,16 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
     URL: { createObjectURL: () => "blob:test", revokeObjectURL: (url) => revoked.push(url) },
     performance: { now: () => Date.now() }, console, Intl, Uint8Array, ArrayBuffer, DataView,
   };
-  vm.runInNewContext(fs.readFileSync(path.join(root, "static/js/main.js"), "utf8"), sandbox);
+  vm.createContext(sandbox);
+  for (const file of ["tool-chat.js", "tool-chat-console.js", "main.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(root, "static/js", file), "utf8"), sandbox);
+  }
   domReady();
   await flush();
+  const bootstrapRequests = requests.slice();
   requests.length = 0; // Initial read-only Session List/History bootstrap is not a user action.
   return { nodes, tools, requests, audios, revoked, tracks, recorders, handlers, window, timers, confirmations,
-    serverSessions, serverHistories,
+    serverSessions, serverHistories, storageValues: values, bootstrapRequests,
     documentEvent(name, event) { (documentHandlers[name] || []).forEach((handler) => handler(event)); },
     microphone: (fn) => { microphone = fn; }, confirm: (value) => { confirm = value; },
     unlock() { nodes["console-lock"].click(); },
@@ -1036,7 +1040,8 @@ test("page exit releases Audio and URL; manual Stop also releases them", async (
   assert.equal(g.revoked.length, 1); assert.equal(button.textContent, "▶ Play");
 });
 
-(async () => {
+module.exports = { fixture, flush, deferred, packet, chooseSession, openSessions, deleteFromList, deleteAllFromList };
+if (require.main === module) (async () => {
   let failures = 0;
   for (const { name, run } of tests) {
     try { await run(); console.log(`PASS ${name}`); }

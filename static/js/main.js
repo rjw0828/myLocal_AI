@@ -47,6 +47,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let sessionRevision = 0;
   let recordingTurn = null;
   let voiceTurns = null;
+  let toolChat = null;
   let chatStorage = null;
   try { chatStorage = window.sessionStorage; } catch (_error) { /* In-tab guard remains. */ }
   const chatGuard = new ChatSessionGuard(chatStorage);
@@ -190,6 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const showView = (view) => {
+    if (toolChat) toolChat.cancel();
     if (voiceTurns) voiceTurns.cancel("Screen changed.");
     if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
     stopTts("Screen changed. TTS playback was stopped.");
@@ -580,7 +582,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const result = requireSuccess(await requestJson(`/sessions/${encodeURIComponent(sessionId)}/history`, { method: "GET" }));
       if (!isCurrent()) return;
       if (result.session_id !== sessionId || !Array.isArray(result.messages)) throw new ApiError("History 응답이 올바르지 않습니다.");
-      if (chatGuard.reason(sessionId)) return; // Never overwrite a pending local Chat.
+      if (chatGuard.reason(sessionId) || toolChat?.blocked(sessionId)) return; // Never overwrite a pending local Chat.
       const messages = result.messages.map((item) => {
         if (!["user", "assistant"].includes(item.role) || typeof item.content !== "string") {
           throw new ApiError("History 응답이 올바르지 않습니다.");
@@ -645,6 +647,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateInputState();
     appendLog("RUNNING", "DELETE /sessions/{id}", `Deleting Session ${detail.number}; waiting for observed work to finish.`);
     try {
+      await toolChat.prepareMutation([sessionId]);
       await chatGuard.beforeReset(sessionId);
       const packet = await chatGuard.run(sessionId, async (confirmCompletion) => {
         const response = await requestJson(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
@@ -659,7 +662,7 @@ document.addEventListener("DOMContentLoaded", () => {
       removeLocalSession();
       appendLog("SUCCESS", "DELETE /sessions/{id}", `Session ${detail.number} deleted.`);
     } catch (error) {
-      appendLog("ERROR", "DELETE /sessions/{id}", errorMessage(error));
+      if (!toolChat?.wasReported(error)) appendLog("ERROR", "DELETE /sessions/{id}", errorMessage(error));
       if ([404, 410].includes(error.status)) removeLocalSession();
       if (chatGuard.reason(sessionId) === "chat_state_uncertain") {
         appendLog("INFO", "SESSION STATE", "Server completion is unknown. This session stays blocked; no automatic retry or new session was created.");
@@ -704,6 +707,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
       stopTts("Delete All approved. Playback stopped.");
       appendLog("RUNNING", "DELETE /sessions", "Waiting for observed Chat/Reset operations before Delete All.");
+      await toolChat.prepareMutation();
       // Do not abort Chat transport: observe its completion, then delete.
       // An uncertain Chat prevents the bulk request altogether.
       await Promise.all([...affected].map((id) => chatGuard.beforeReset(id)));
@@ -727,7 +731,7 @@ document.addEventListener("DOMContentLoaded", () => {
       sessionPopupItems.replaceChildren();
       appendLog("SUCCESS", "DELETE /sessions", `${data.deleted_count} sessions deleted. Next Session number: 1.`);
     } catch (error) {
-      appendLog("ERROR", "DELETE /sessions", errorMessage(error));
+      if (!toolChat?.wasReported(error)) appendLog("ERROR", "DELETE /sessions", errorMessage(error));
       if (sent && !confirmed) {
         appendLog("INFO", "SESSION STATE", "Delete All completion is unknown. Session changes remain blocked across reload; verify server state before resynchronization. No automatic retry.");
       }
@@ -1075,6 +1079,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const startRecording = async () => {
     if (deletingAll || deleteAllUncertain) return;
+    if (toolChat?.blocked(sessionInput.value) || (voiceModeEnabled && toolChat?.enabled)) return;
     const locked = lockButton.getAttribute("aria-pressed") === "true";
     if (!sessionInput.value || deletingSessions.has(sessionInput.value) || deletedSessions.has(sessionInput.value)) return;
     if (locked || requestRunning || isVoiceBusy()) return;
@@ -1170,6 +1175,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const automatic = Boolean(voiceTurns && voiceTurns.active);
     const sessionId = sessionInput.value.trim();
     const blocked = sessionId ? chatGuard.reason(sessionId) : null;
+    const toolBlocked = Boolean(toolChat?.blocked(sessionId));
     const unavailable = deletingAll || deleteAllUncertain || deletingSessions.has(sessionId) || deletedSessions.has(sessionId);
     newChatButton.disabled = preparingDeleteAll || deletingAll || deleteAllUncertain || sessionCreating || requestRunning;
     deleteAllSessionsButton.disabled = preparingDeleteAll || deletingAll || deleteAllUncertain || sessionCreating || deletingSessions.size > 0;
@@ -1178,10 +1184,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const row = button.closest(".session-row");
       button.disabled = deletingAll || deleteAllUncertain || Boolean(row && deletingSessions.has(row.dataset.sessionId));
     });
-    messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy;
+    messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy || toolBlocked;
     sttLanguage.disabled = locked || requestRunning || voiceBusy;
     recordVoiceButton.disabled = locked || !sessionId || unavailable || requestRunning
-      || Boolean(blocked) || (automatic && voiceState !== "recording")
+      || Boolean(blocked) || toolBlocked || (automatic && voiceState !== "recording")
       || (["requesting", "transcribing"].includes(voiceState));
     recordVoiceButton.textContent = voiceState === "recording"
       ? (automatic ? "Stop & Send" : "Stop") : "Record";
@@ -1190,7 +1196,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     resetSessionButton.disabled = !sessionId || unavailable || requestRunning || (voiceBusy && !automatic);
     ttsLanguage.disabled = voiceBusy;
-    voiceModeButton.disabled = requestRunning || (voiceBusy && !automatic);
+    voiceModeButton.disabled = requestRunning || toolBlocked || Boolean(toolChat?.enabled) || (voiceBusy && !automatic);
+    $("#tool-chat-mode").disabled = requestRunning || voiceBusy || voiceModeEnabled;
     cancelVoiceTurnButton.disabled = !automatic;
     const messages = conversations.get(currentConversationSession) || [];
     conversationOutput.querySelectorAll(".tts-play-button").forEach((button) => {
@@ -1209,6 +1216,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const sendChat = async (sessionId, message, responseLanguage, automatic = false) => {
+    if (toolChat?.blocked(sessionId)) throw new ApiError("Tool Chat owns this session.", 409, "session_reserved");
     const startedAt = performance.now();
     let chatRequest;
     try {
@@ -1262,6 +1270,7 @@ document.addEventListener("DOMContentLoaded", () => {
     appendLog("RUNNING", apiLabel, "Waiting for any observed Chat to finish before Reset.");
     setRequestRunning(true);
     try {
+      await toolChat.prepareMutation([sessionId]);
       await chatGuard.beforeReset(sessionId);
       const packet = await chatGuard.run(sessionId, async (confirmCompletion) => {
         const resetPacket = await requestJson(`/sessions/${encodeURIComponent(sessionId)}/reset`, { method: "POST" });
@@ -1277,7 +1286,7 @@ document.addEventListener("DOMContentLoaded", () => {
       refreshSessionList().catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
       appendLog("SUCCESS", apiLabel, `Session '${result.session_id}' reset complete.`);
     } catch (error) {
-      appendLog("ERROR", apiLabel, errorMessage(error));
+      if (!toolChat?.wasReported(error)) appendLog("ERROR", apiLabel, errorMessage(error));
     } finally {
       setRequestRunning(false);
     }
@@ -1324,9 +1333,18 @@ document.addEventListener("DOMContentLoaded", () => {
       appendLog("ERROR", "POST /chat", "빈 메시지는 전송할 수 없습니다.");
       return;
     }
+    if (tool === "chat" && Array.from(messageInput.value).length > 10000) {
+      appendLog("ERROR", "CHAT", "Message exceeds 10,000 characters."); return;
+    }
+    if (tool === "chat" && toolChat?.blocked(sessionId)) {
+      appendLog("ERROR", "TOOL CHAT", "This session remains reserved. Check Tool Chat status before sending."); return;
+    }
     if (tool === "chat") {
       try { chatGuard.assertAvailable(sessionId); }
       catch (error) { appendLog("ERROR", "CHAT SESSION", errorMessage(error)); return; }
+    }
+    if (tool === "chat" && toolChat?.enabled) {
+      await toolChat.start(message, ttsLanguage.value); return;
     }
     const apiLabel = tool === "health" ? "GET /health" : tool === "chat" ? "POST /chat" : `POST /sessions/${sessionId}/reset`;
     if (tool === "chat") {
@@ -1450,6 +1468,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   voiceModeButton.addEventListener("click", () => {
+    if (toolChat?.enabled || toolChat?.blocked(sessionInput.value)) return;
     if (requestRunning || (isVoiceBusy() && !voiceTurns.active)) return;
     voiceModeEnabled = !voiceModeEnabled;
     if (!voiceModeEnabled) voiceTurns.cancel("Voice Conversation switched OFF.");
@@ -1501,6 +1520,7 @@ document.addEventListener("DOMContentLoaded", () => {
   messageInput.addEventListener("input", updateInputState);
   sessionInput.addEventListener("input", () => {
     sessionRevision += 1;
+    if (toolChat) toolChat.syncContext();
     voiceTurns.cancel("Session changed.");
     if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
     updateInputState();
@@ -1545,6 +1565,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (requestRunning) return;
     const nextLocked = lockButton.getAttribute("aria-pressed") !== "true";
     if (nextLocked) voiceTurns.cancel("Input locked.");
+    if (nextLocked && toolChat) toolChat.cancel();
     if (nextLocked && ["requesting", "recording"].includes(voiceState)) stopRecording(true);
     if (nextLocked && voiceState === "transcribing") discardRecording();
     if (nextLocked) stopTts("Input was locked. TTS playback was stopped.");
@@ -1559,12 +1580,42 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!nextLocked) messageInput.focus();
   });
 
+  // MCP-5D-3: explicit opt-in; ordinary /chat and Voice retain their own flows.
+  const toolTracker = new LocalAIToolChat.ToolChatTracker({
+    client: new LocalAIToolChat.ToolChatClient({ fetch: window.fetch.bind(window),
+      setTimer: window.setTimeout.bind(window), clearTimer: window.clearTimeout.bind(window) }),
+    storage: chatStorage, setTimer: window.setTimeout.bind(window), clearTimer: window.clearTimeout.bind(window),
+  });
+  toolChat = new LocalAIToolChatConsole({
+    tracker: toolTracker,
+    nodes: Object.fromEntries(Object.entries({ mode: "mode", cancel: "cancel", check: "check", reconcile: "reconcile", status: "status",
+      output: "output-status", dialog: "dialog", allow: "allow", deny: "deny", close: "approval-close",
+      server: "approval-server", tool: "approval-tool", description: "approval-description", arguments: "approval-arguments",
+      path: "approval-path", scope: "approval-scope", notice: "approval-notice" }).map(([key, id]) => [key, $(`#tool-chat-${id}`)])),
+    context: () => sessionInput.value ? { sessionId: sessionInput.value.trim(), generation: sessionRevision,
+      resetVersion: sessionResetVersions.get(sessionInput.value.trim()) || 0 } : null,
+    canStart: (modeOnly) => !voiceModeEnabled && !isVoiceBusy() && !requestRunning
+      && (modeOnly || (lockButton.getAttribute("aria-pressed") !== "true" && Boolean(sessionInput.value)
+        && !preparingDeleteAll && !deletingAll && !deleteAllUncertain && !deletingSessions.has(sessionInput.value)
+        && !deletedSessions.has(sessionInput.value) && !chatGuard.reason(sessionInput.value))),
+    question: (id, text) => { historyLoadId += 1; setConversationSession(id); appendConversation(id, "user", text); },
+    answer: (id, result, language) => {
+      appendConversation(id, "assistant", result.message, language);
+      appendLog("SUCCESS", "TOOL CHAT", formatChatMetrics(result));
+    },
+    syncHistory: (id) => {
+      if (sessionInput.value === id && !toolChat.blocked(id)) loadSessionHistory(id, sessionRevision);
+      refreshSessionList().catch((error) => appendLog("ERROR", "GET /sessions", errorMessage(error)));
+    },
+    log: (level, text) => appendLog(level, "TOOL CHAT", text), update: updateInputState,
+  });
   appendLog("READY", "SYSTEM", "Local controller console initialized. Unlock D to send Chat; session controls are in E.");
   if (deleteAllUncertain) appendLog("ERROR", "SESSION STATE", "Previous Delete All completion is unknown. Session changes remain blocked; verified server resynchronization is required.");
   renderConversation(currentConversationSession);
   updateInputState();
-  initializeSessions();
+  initializeSessions().then(() => toolChat.restoreKnownJobs());
   window.addEventListener("beforeunload", () => {
+    toolChat.dispose();
     voiceTurns.cancel("Page closed.");
     stopTts("Page closed. TTS playback was stopped.", false);
     clearRecordingTimers();

@@ -2,11 +2,23 @@
 
 ## MCP-1/2/3 개발 브랜치 추가 기능
 
-MCP-5C Backend 통합을 추가했습니다. `/tool-chat/jobs`에서 Job 생성·조회·승인·거부·취소·확인된 MCP 완료 재동기화를 제공하고, 일반 Chat과 같은 세션의 작업은 예약으로 충돌을 차단합니다. 성공한 질문·최종 답변만 SQLite에 저장합니다. Root 확인 실패 시 Filesystem은 노출·실행하지 않으며 전체 단일 Root 승인 제한을 유지합니다. **Chat UI·Voice 연결은 아직 MCP-5D 작업으로 남아 있습니다.** 계약과 운영 제한은 [MCP-5C API 문서](tool_calling/API.md)를 참고하세요.
+MCP-5C Backend 통합과 MCP-5D-3 Tool Chat UI 연결을 추가했습니다. D의 **Tool Chat OFF/ON**은 기본 OFF이며, ON 상태에서 Enter를 누르면 `/tool-chat/jobs`를 사용합니다. 승인 Dialog에서 서버·도구·인수·실제 Root 범위를 확인한 뒤 Allow/Deny를 선택합니다. Close/Esc는 승인·거부가 아니라 Dialog만 닫습니다. 승인 내용이 바뀌면 Review approval로 다시 확인해야 합니다. E에는 진행 상태와 완료된 최종 답변, F에는 민감한 인수를 제외한 기술 로그를 표시합니다. HTTP 202는 접수일 뿐 완료가 아닙니다. 성공한 질문·최종 답변만 SQLite에 저장하며 History로 동기화합니다. Root 확인 실패 시 Filesystem은 실행하지 않으며 전체 단일 Root 승인 제한을 유지합니다. 계약과 운영 제한은 [MCP-5C API 문서](tool_calling/API.md), UI·복구 정책은 [클라이언트 문서](tool_calling/CLIENT.md)를 참고하세요.
 
-MCP-5B에서 Job·Session 예약 인터페이스·TurnGrant·도구 Catalog·보수적인 Windows 경로 정책의 독립 Python 코어를 구현했습니다. 이후 MCP-5C에서 Backend·Root 확인 어댑터·세션 이벤트를 연결했으며, Web 승인 UI와 Voice 연동은 아직 후속 작업입니다. 좁은 파일/폴더 승인을 서버가 강제하지 못하면 실행을 거부합니다. 코어 계약과 제한은 [MCP-5B 코어 문서](tool_calling/README.md)를 참고하세요.
+MCP-5B에서 Job·Session 예약 인터페이스·TurnGrant·도구 Catalog·보수적인 Windows 경로 정책의 독립 Python 코어를 구현했습니다. 이후 MCP-5C에서 Backend·Root 확인 어댑터·세션 이벤트, MCP-5D-3에서 수동 Tool Chat 전송·Web 승인을 연결했습니다. 일반 Chat·수동 STT·기존 Play TTS는 유지합니다. Tool Chat과 자동 Voice Conversation은 동시에 시작할 수 없으며 Tool Chat에 자동 TTS는 추가하지 않았습니다. MCP-5D-4에서는 Reset/Delete/Delete All 사용자 확인 후 대상 Job의 Cancel과 새로운 GET 상태 확인을 먼저 수행합니다. 예약 또는 미확정 작업이 남거나 검증이 실패하면 데이터 변경 요청을 보내지 않습니다. 취소 확인 후에도 `reservation_owned=false`, `unsettled=false` 확인이 필요하며 Backend의 기존 예약/revision 검증은 유지됩니다. 코어 계약과 제한은 [MCP-5B 코어 문서](tool_calling/README.md)를 참고하세요.
 
 MCP-5C 검증(2026-11-13): 신규 Backend 테스트 34개 통과. 지정 quick 306개(305 통과/1 건너뜀, 23.34초), integration 356개(355 통과/1 건너뜀, 52.61초)를 확인했습니다. 건너뜀은 기존 Windows symlink 생성 권한 제한이며 junction은 실제 검증했습니다. 별도 임시 Root에서 실제 Filesystem 서버의 Root 밖 거부와 승인 후 파일 읽기·History 저장도 확인했습니다(Ollama만 Fake). 이번 단계의 실 Qwen 재호출·Full·Edge 검증은 수행하지 않았습니다.
+
+MCP-5D-3 검증(2026-11-13): 신규 Console 연결 테스트 26개, Tracker/Client 테스트 43개 통과. UI quick는 기존 Voice·MCP UI를 포함해 204개 통과(0.95초)했습니다. 실제 JS 이벤트 처리 코드에 Mock Fetch·브라우저 API 모형을 사용했으며 실제 DOM/Edge·Ollama·MCP 서버 검증이나 Full 테스트는 수행하지 않았습니다. 자동 Polling 종료 후 버튼의 요청 중 상태가 해제되지 않던 문제도 재현 테스트와 함께 수정했습니다.
+
+MCP-5D-4 검증(2026-11-13): Console 43개, Tracker/Client 44개 통과. 신규 방어 검증은 JS 18개 및 Backend 3개입니다. 지정 quick `-Module ui,mcp`는 392개 중 391 통과/1 건너뜀(13.23초), integration `-Module app,sessions,storage,mcp,ui`는 522개 중 521 통과/1 건너뜀(54.30초)입니다. 건너뜀은 기존 Windows symlink 권한 제한입니다. 새 테스트는 브라우저 API 모형/Fake Ollama·MCP/임시 SQLite 기반이며 integration에는 기존 실제 SDK stdio fixture 검증도 포함됩니다. Full·Edge·실 Qwen 검증은 하지 않았습니다.
+
+새로고침 후에는 알려진 Job ID만 GET으로 확인합니다. 승인·Job 생성 POST는 재실행하지 않으며 과거 승인은 복원하지 않습니다. 완료된 기록은 History로 복원합니다. Job ID 유실, 404, 통신 실패, UNCERTAIN은 자동 해제하지 않습니다. Cancel 실패 후 Retry Cancel은 명시적인 사용자 재시도입니다. Backend API/DB Schema 확장은 하지 않았으며 Job ID가 없는 경우의 복구 API는 없습니다. 동일 MCP 서버에 대한 동시 Discovery는 기존 Runtime의 `mcp_busy` 제한으로 실패할 수 있습니다. Full과 실제 MCP 검증은 아래 MCP-5D-5B 결과를 참고하며, Edge 실기기 검증은 남아 있습니다.
+
+MCP-5D-5B(2026-11-13): 승인 HTTP 오류가 E에서 다음 render/Polling에 덮어써지던 문제와 Tracker·Console·Session 처리 catch의 동일 오류 중복 로그를 재현해 최소 수정했습니다. E는 실제 Job 상태·예약과 마지막 요청 오류를 함께 표시합니다. 동일 오류 객체의 재기록만 막고, 서로 다른 요청의 같은 오류 코드는 합치지 않습니다. 잘못된 경로의 승인 거부는 WAITING_APPROVAL을 유지할 수 있으며 Cancel/Deny 또는 기존 승인 대기 제한으로 종료됩니다. FAILED의 Polling 종료·예약 해제, 다른 세션 사용, Cancel/상태 확인을 모형 테스트로 검증했습니다. 안전 정책과 Backend API/SQLite Schema는 변경하지 않았습니다.
+
+검증: 신규 회귀 테스트 5개 추가 후 Console 47/47, quick ui,mcp 397개(396 통과/1 건너뜀, 14.85초), integration app,sessions,storage,mcp,ui 527개(526 통과/1 건너뜀, 59.49초), 최종 Full **1회** 552개(551 통과/1 건너뜀, 60.79초)입니다. 건너뜀은 Windows symlink 권한 제한입니다. 실제 Qwen + Time/Filesystem에서 Time 호출, 파일 Allow/Deny, Time→Filesystem 순차 호출과 History 저장을 확인했습니다. Root 밖/상대경로 질문의 실제 모델 선택은 실패하거나 호출을 생략했으므로 차단 성공으로 계산하지 않았습니다. 별도의 Fake Ollama + 실제 Filesystem/SDK/Flask/임시 DB 검증에서 Backend의 두 경로 거부와 예약 유지→Cancel 해제, 실제 MCP 서버의 Root 밖 읽기 거부를 확인했습니다. 테스트 파일과 운영 DB·승인 파일은 보존했습니다.
+
+릴리스 판정은 **CONDITIONAL**입니다. 재현한 코드 결함은 회귀 검증을 통과했지만 Edge 직접 조작·실제 마이크/스피커 검증은 미실행입니다. 이전 Computer Use URL 식별 보안 제한을 우회하지 않았습니다. Dialog/Esc/포커스, Cancel/Retry, 세션 전환, Reset/Delete, 새로고침, Chat/Voice, 작은 창 배치의 사용자 확인이 필요합니다. 자동 도구 선택 품질은 MCP-5E 과제로 남기며 이번 단계에서 개선하지 않았습니다. 자세한 증거 구분과 수동 절차는 [클라이언트 문서](tool_calling/CLIENT.md)를 참고하세요.
 
 Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP-2 Registry/Flask API를 추가했습니다. MCP 전용 DB는 `data/mcp_registry.sqlite3`이며 기존 Session DB와 스키마는 변경하지 않습니다. 로컬 소유자가 승인한 stdio 실행 프로필만 등록하고, 도구별 기본 거부 권한과 인수에 묶인 일회용 승인 토큰으로 수동 호출합니다. 재시작 시 등록·권한만 복원하고 서버는 자동 실행하지 않습니다.
 

@@ -242,6 +242,86 @@ class ToolChatBackendTests(unittest.TestCase):
         self.assertEqual(self.history(), [])
         self.assertEqual(self.http("POST", "/sessions/" + self.session + "/reset", {}).status_code, 200)
 
+    def test_delete_all_with_multiple_waiting_jobs_cancels_without_executing(self):
+        other = self.http("POST", "/sessions").json["session_id"]
+        self.mode = "time"
+        # Finish Discovery before starting the second job: this case tests two
+        # retained approval reservations, not same-server Discovery admission.
+        first = self.start(); self.wait(first, {"WAITING_APPROVAL"})
+        second = self.start(session_id=other); self.wait(second, {"WAITING_APPROVAL"})
+        self.assertEqual(self.http("DELETE", "/sessions").status_code, 200)
+        for job in (first, second):
+            status = self.wait(job, {"CANCELLED"})
+            self.assertFalse(status["reservation_owned"])
+            self.assertFalse(status["unsettled"])
+        self.assertEqual(self.http("GET", "/sessions").json["sessions"], [])
+        self.assertEqual(self.time_scenario.calls, [])
+
+    def test_cancel_acknowledgement_does_not_allow_partial_delete_all(self):
+        other = self.http("POST", "/sessions").json["session_id"]
+        self.assertEqual(self.http("POST", "/chat", {"session_id": other, "message": "preserve"}).status_code, 200)
+        before = self.http("GET", "/sessions").json
+        history = self.history(other)
+        self.mode = "block"; self.entered, self.release = Event(), Event(); self.gates.append(self.release)
+        job = self.start(); self.assertTrue(self.entered.wait(3))
+        cancel = self.http("POST", "/tool-chat/jobs/" + job + "/cancel", {})
+        self.assertEqual(cancel.status_code, 200)
+        self.assertTrue(cancel.json["job"]["reservation_owned"])
+        for method, path in (("DELETE", "/sessions"), ("DELETE", "/sessions/" + self.session),
+                             ("POST", "/sessions/" + self.session + "/reset")):
+            response = self.http(method, path, {} if method == "POST" else None)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json["error"]["code"], "session_unsettled")
+        self.assertEqual(self.http("GET", "/sessions").json, before)
+        self.assertEqual(self.history(other), history)
+        self.release.set()
+        deadline = time.monotonic() + 3
+        while self.backend.status(job)["reservation_owned"] and time.monotonic() < deadline: time.sleep(.01)
+        self.assertFalse(self.backend.status(job)["reservation_owned"])
+        self.assertEqual(self.http("DELETE", "/sessions").status_code, 200)
+
+    def test_lost_final_response_recovers_via_reads_without_duplicate_commit(self):
+        job = self.start(); self.wait(job, {"COMPLETED"})
+        calls = len(self.ollama_calls)
+        for _ in range(3):
+            status = self.http("GET", "/tool-chat/jobs/" + job).json["job"]
+            self.assertEqual(status["state"], "COMPLETED")
+            self.assertFalse(status["reservation_owned"])
+            self.assertIsNone(self.http("GET", "/tool-chat/jobs/" + job + "/approval").json["approval"])
+            self.assertEqual(len(self.history()), 2)
+        self.assertEqual(len(self.ollama_calls), calls)
+        self.assertEqual(self.time_scenario.calls, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem policy")
+    def test_invalid_relative_path_approval_keeps_safe_wait_then_cancel_or_expiry_releases(self):
+        def relative(messages, *, tools=None, **_kwargs):
+            self.ollama_calls.append(deepcopy(messages))
+            alias = next(t["function"]["name"] for t in tools if t["function"]["description"] == "read_file")
+            return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": alias, "arguments": {"path": "note.txt"}}}]}}
+        self.mock_ollama.side_effect = relative
+        for ending in ("cancel", "expiry"):
+            job = self.start(); self.wait(job, {"WAITING_APPROVAL"})
+            response = self.approve(job)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json["error"]["code"], "filesystem_invalid_path")
+            for _ in range(2):
+                status = self.http("GET", "/tool-chat/jobs/" + job).json["job"]
+                self.assertEqual(status["state"], "WAITING_APPROVAL")
+                self.assertTrue(status["reservation_owned"])
+            self.assertEqual(self.fs_scenario.calls, [])
+            self.assertEqual(self.history(), [])
+            if ending == "cancel":
+                self.assertEqual(self.http("POST", "/tool-chat/jobs/" + job + "/cancel", {}).status_code, 200)
+                status = self.wait(job, {"CANCELLED"})
+            else:
+                self.backend.core.limits = Limits(approval_seconds=.1)
+                status = self.wait(job, {"FAILED"})
+                self.assertEqual(status["error_code"], "job_timeout")
+            self.assertFalse(status["reservation_owned"])
+            self.assertFalse(status["unsettled"])
+        self.assertEqual(len(self.ollama_calls), 2)  # No automatic model or approval retry.
+
     def test_revision_change_prevents_approval_and_history_commit(self):
         self.mode = "time"; job = self.start(); status = self.wait(job, {"WAITING_APPROVAL"})
         store = self.app.extensions["session_store"]; store.reset(self.session, 0)
