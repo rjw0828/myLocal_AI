@@ -21,6 +21,7 @@ from .models import (
     MCPRuntimeError, OperationOutcome, OperationState, ServerConfig, ServerState,
     ServerStatus, ToolCallResult, ToolInfo,
 )
+from .launch import filesystem_artifact
 
 
 def sdk_client(config, errlog):
@@ -181,6 +182,7 @@ class ServerWorker:
         self._scope = None
         self._stop_requested = False
         self._task = None
+        self.connection_info = None
 
     def launch(self):
         self._task = self.host.submit(self.run())
@@ -289,7 +291,14 @@ class ServerWorker:
                 if self._stop_requested:
                     scope.cancel()
                 with open(os.devnull, "w", encoding="utf-8") as errlog:
+                    artifact = filesystem_artifact(self.config)
                     async with self.client_factory(self.config, errlog) as client:
+                        self.connection_info = {
+                            "default_stdio": self.client_factory is sdk_client,
+                            "roots_disabled": self.client_factory is sdk_client and getattr(client, "list_roots_callback", None) is None,
+                            "protocol_version": getattr(client, "protocol_version", None),
+                            "filesystem_artifact": artifact if artifact == filesystem_artifact(self.config) else None,
+                        }
                         entered = True
                         with self.lock:
                             if not self._stop_requested:

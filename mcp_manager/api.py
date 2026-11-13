@@ -44,6 +44,8 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
+    app.extensions["mcp_request_guard"] = local_request_only
+
     @api.errorhandler(MCPServiceError)
     def service_error(error):
         return jsonify(error={"code": error.code, "message": str(error)}), error.status

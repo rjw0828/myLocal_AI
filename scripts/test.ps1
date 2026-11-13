@@ -46,7 +46,7 @@ function Get-InferredModules {
     $selected = New-Object System.Collections.Generic.List[string]
     foreach ($path in $Paths) {
         switch -Regex ($path) {
-            '^(mcp_manager/|tests/test_mcp_|static/js/mcp-(ui|schema)\.js|scripts/approve_mcp_profile\.py|start_app\.bat$)' { $selected.Add("mcp"); continue }
+            '^(mcp_manager/|tool_calling/|tests/test_(mcp_|tool_calling\.py|tool_chat_backend\.py)|static/js/mcp-(ui|schema)\.js|scripts/approve_mcp_profile\.py|start_app\.bat$)' { $selected.Add("mcp"); continue }
             '^(storage/|tests/test_sqlite_store\.py)' { $selected.Add("storage"); continue }
             '^tests/(test_sessions|test_delete_all)\.py' { $selected.Add("sessions"); continue }
             '^(voice/|tests/test_(stt|tts)_api\.py)' { $selected.Add("voice"); continue }
@@ -133,6 +133,8 @@ function Get-TestPlan {
                 }
             }
             "mcp" {
+                Add-UniqueItem $python "tests/test_tool_chat_backend.py"
+                Add-UniqueItem $python "tests/test_tool_calling.py"
                 Add-UniqueItem $python "tests/test_mcp_profile_requests.py"
                 Add-UniqueItem $javascript "tests/test_mcp_ui.js"
                 Add-UniqueItem $python "tests/test_mcp_startup.py"

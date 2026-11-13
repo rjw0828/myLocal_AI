@@ -48,6 +48,7 @@ class MCPService:
         self._lock, self._shutdown_lock = RLock(), Lock()
         self._gates, self._tokens, self._bindings = {}, {}, {}
         self._actions, self._stopping = {}, set()
+        self._permission_generations = {}
         self._closing = False
         self.clock = time.monotonic
 
@@ -245,11 +246,11 @@ class MCPService:
                 self._bindings.pop(server_id, None)
                 self._gates.pop(server_id, None)
 
-    def _tools(self, row):
+    def _tools(self, row, timeout=None):
         self._require_approved(row)
         if row["server_id"] not in self._registered:
             raise MCPRuntimeError("mcp_not_ready", "MCP server is stopped.")
-        return self._runtime.list_tools(row["server_id"], refresh=True)
+        return self._runtime.list_tools(row["server_id"], refresh=True, timeout=timeout)
 
     @staticmethod
     def _schema_hash(tool):
@@ -258,8 +259,8 @@ class MCPService:
         except (ValueError, TypeError, RecursionError):
             raise MCPServiceError("mcp_tool_schema_invalid", "MCP tool schema is invalid.", 502) from None
 
-    def _tool(self, row, name):
-        for tool in self._tools(row):
+    def _tool(self, row, name, timeout=None):
+        for tool in self._tools(row, timeout=timeout):
             if tool.name == name:
                 return tool
         raise MCPServiceError("mcp_tool_not_found", "MCP tool was not found.", 404)
@@ -268,24 +269,27 @@ class MCPService:
         grant = self.registry.permission(server_id, name)
         return bool(grant and grant["allowed"] and grant["schema_hash"] == schema_hash)
 
-    def list_tools(self, server_id):
+    def list_tools(self, server_id, *, timeout=None):
         with self._guard(server_id) as row:
             return [asdict(tool) | {"schema_hash": self._schema_hash(tool),
                     "allowed": self._permission(server_id, tool.name, self._schema_hash(tool))}
-                    for tool in self._tools(row)]
+                    for tool in self._tools(row, timeout=timeout)]
 
     def set_permission(self, server_id, name, allowed):
         with self._guard(server_id) as row:
             schema_hash = self._schema_hash(self._tool(row, name)) if allowed else ""
             self.registry.set_permission(server_id, name, schema_hash, allowed)
+            with self._lock:
+                key = (server_id, name)
+                self._permission_generations[key] = self._permission_generations.get(key, 0) + 1
             self._clear_tokens(server_id, name)
             return {"tool_name": name, "allowed": allowed, "schema_hash": schema_hash}
 
     def permissions(self, server_id):
         return [row | {"allowed": bool(row["allowed"])} for row in self.registry.list_permissions(server_id)]
 
-    def _authorized_tool(self, row, name):
-        tool = self._tool(row, name)
+    def _authorized_tool(self, row, name, timeout=None):
+        tool = self._tool(row, name, timeout=timeout)
         schema_hash = self._schema_hash(tool)
         if not self._permission(row["server_id"], name, schema_hash):
             raise MCPServiceError("mcp_tool_permission_required", "This tool/schema has not been permitted.", 403)
@@ -357,10 +361,50 @@ class MCPService:
             while len(records) > 32:
                 records.popitem(last=False)
 
-    def call_tool(self, server_id, name, arguments, token):
+    def _call_context(self, row, tool, schema_hash):
+        """Internal Python adapter data, never added to public HTTP responses."""
+        server_id = row["server_id"]
+        if self._status(server_id).state != ServerState.RUNNING:
+            raise MCPRuntimeError("mcp_not_ready", "MCP server is not running.")
+        with self._lock:
+            permission_generation = self._permission_generations.get((server_id, tool.name), 0)
+        return {"server_id": server_id, "config_hash": row["config_hash"],
+                "config": json.loads(canonical_json(row["config"])),
+                "connection_generation": self._runtime.connection_generation(server_id),
+                "connection_info": self._runtime.connection_info(server_id),
+                "permission_generation": permission_generation,
+                "schema_hash": schema_hash, "tool": asdict(tool)}
+
+    def inspect_tool(self, server_id, name, *, timeout=None):
         with self._guard(server_id) as row:
+            self.refresh_profiles()
+            tool, schema_hash = self._authorized_tool(row, name, timeout=timeout)
+            return self._call_context(row, tool, schema_hash)
+
+    def inspect_server(self, server_id):
+        """Trusted backend launch metadata, not a public management response."""
+        with self._guard(server_id) as row:
+            self.refresh_profiles()
+            self._require_approved(row)
+            if self._status(server_id).state != ServerState.RUNNING:
+                raise MCPRuntimeError("mcp_not_ready", "MCP server is not running.")
+            return {"server_id": server_id, "config_hash": row["config_hash"],
+                    "config": json.loads(canonical_json(row["config"])),
+                    "connection_generation": self._runtime.connection_generation(server_id),
+                    "connection_info": self._runtime.connection_info(server_id)}
+
+    def revoke_call_approval(self, token):
+        with self._lock:
+            self._tokens.pop(fingerprint(token), None)
+
+    def call_tool(self, server_id, name, arguments, token, *, before_execute=None):
+        with self._guard(server_id) as row:
+            if before_execute is not None:
+                self.refresh_profiles()
             tool, schema_hash = self._authorized_tool(row, name)
             arguments = self._arguments(tool, arguments)
+            if before_execute is not None:
+                before_execute(self._call_context(row, tool, schema_hash), arguments)
             self._consume(server_id, name, schema_hash, arguments, token)
             try:
                 result = self._runtime.call_tool(server_id, name, arguments)

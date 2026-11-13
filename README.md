@@ -2,6 +2,12 @@
 
 ## MCP-1/2/3 개발 브랜치 추가 기능
 
+MCP-5C Backend 통합을 추가했습니다. `/tool-chat/jobs`에서 Job 생성·조회·승인·거부·취소·확인된 MCP 완료 재동기화를 제공하고, 일반 Chat과 같은 세션의 작업은 예약으로 충돌을 차단합니다. 성공한 질문·최종 답변만 SQLite에 저장합니다. Root 확인 실패 시 Filesystem은 노출·실행하지 않으며 전체 단일 Root 승인 제한을 유지합니다. **Chat UI·Voice 연결은 아직 MCP-5D 작업으로 남아 있습니다.** 계약과 운영 제한은 [MCP-5C API 문서](tool_calling/API.md)를 참고하세요.
+
+MCP-5B에서 Job·Session 예약 인터페이스·TurnGrant·도구 Catalog·보수적인 Windows 경로 정책의 독립 Python 코어를 구현했습니다. 이후 MCP-5C에서 Backend·Root 확인 어댑터·세션 이벤트를 연결했으며, Web 승인 UI와 Voice 연동은 아직 후속 작업입니다. 좁은 파일/폴더 승인을 서버가 강제하지 못하면 실행을 거부합니다. 코어 계약과 제한은 [MCP-5B 코어 문서](tool_calling/README.md)를 참고하세요.
+
+MCP-5C 검증(2026-11-13): 신규 Backend 테스트 34개 통과. 지정 quick 306개(305 통과/1 건너뜀, 23.34초), integration 356개(355 통과/1 건너뜀, 52.61초)를 확인했습니다. 건너뜀은 기존 Windows symlink 생성 권한 제한이며 junction은 실제 검증했습니다. 별도 임시 Root에서 실제 Filesystem 서버의 Root 밖 거부와 승인 후 파일 읽기·History 저장도 확인했습니다(Ollama만 Fake). 이번 단계의 실 Qwen 재호출·Full·Edge 검증은 수행하지 않았습니다.
+
 Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP-2 Registry/Flask API를 추가했습니다. MCP 전용 DB는 `data/mcp_registry.sqlite3`이며 기존 Session DB와 스키마는 변경하지 않습니다. 로컬 소유자가 승인한 stdio 실행 프로필만 등록하고, 도구별 기본 거부 권한과 인수에 묶인 일회용 승인 토큰으로 수동 호출합니다. 재시작 시 등록·권한만 복원하고 서버는 자동 실행하지 않습니다.
 
 이 브랜치의 Flask 실행 환경에는 `.\.venv\Scripts\python.exe -m pip install -r requirements-mcp.txt`로 MCP 의존성도 설치해야 합니다. 기존 환경에는 MCP-1에서 설치한 SDK 2.3.0을 재사용합니다. MCP 검증은 실제 SDK stdio 테스트와 Mock/임시 SQLite 테스트를 구분하며 Edge UI 검증을 뜻하지 않습니다.

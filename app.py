@@ -79,7 +79,7 @@ class SessionDeleting(RuntimeError):
 
 
 def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_configs=None,
-               mcp_runtime_factory=None) -> Flask:
+               mcp_runtime_factory=None, tool_bindings_factory=None, tool_limits=None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
@@ -205,6 +205,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     @app.delete("/sessions")
     def delete_all_sessions() -> Response:
         nonlocal deleting_all
+        tool_backend.cancel_all()
         with sessions_lock:
             # Do not race an individual Delete or another bulk operation.
             if deleting_all or any(session.deleting for session in sessions.values()):
@@ -220,6 +221,8 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
             with ExitStack() as locks:
                 for _, session in snapshot:
                     locks.enter_context(session.lock)
+                for session_id, _session in snapshot:
+                    locks.enter_context(tool_backend.reservations.ordinary(session_id))
                 deleted_ids = store.delete_all()
                 with sessions_lock:
                     deleted_session_ids.update(deleted_ids)
@@ -273,6 +276,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     def delete_session(session_id: str) -> Response | tuple[Response, int]:
         if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
             return error_response("invalid_session_id", "유효한 session_id가 필요합니다.", 400)
+        tool_backend.cancel_session(session_id)
         with sessions_lock:
             if deleting_all:
                 raise SessionDeleting()
@@ -286,7 +290,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         try:
             # A Chat already owning the lock finishes first. All queued/new
             # operations are rejected; no old request can recreate this ID.
-            with session.lock:
+            with session.lock, tool_backend.reservations.ordinary(session_id):
                 # The Chat holding this lock has now committed or failed.
                 row = store.load(session_id)
                 if row is None:
@@ -381,7 +385,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         committed = False
         try:
             # Keep a chat and a concurrent reset on the same session ordered.
-            with session.lock:
+            with session.lock, tool_backend.reservations.ordinary(session_id):
                 require_live_session(session)
                 refresh_session(session_id, session)
                 messages = session.messages or [
@@ -597,11 +601,12 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     def reset(session_id: str) -> Response | tuple[Response, int]:
         if not session_id.strip() or len(session_id) > MAX_SESSION_ID_LENGTH:
             return error_response("invalid_session_id", f"session_id는 {MAX_SESSION_ID_LENGTH}자 이하의 문자열이어야 합니다.", 400)
+        tool_backend.cancel_session(session_id)
         session, _ = acquire_session(session_id, create=False)
         if session is not None:
             reset_committed = False
             try:
-                with session.lock:
+                with session.lock, tool_backend.reservations.ordinary(session_id):
                     require_live_session(session)
                     refresh_session(session_id, session)
                     store.reset(session_id, session.revision)
@@ -638,9 +643,66 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         return error_response("internal_error", "내부 처리 오류가 발생했습니다.", 500)
 
     from mcp_manager.api import install_mcp
-    install_mcp(app, session_database_path=store.path, control_guard=require_local_control_header,
+    mcp_service = install_mcp(app, session_database_path=store.path, control_guard=require_local_control_header,
                 database_path=mcp_database_path, approved_configs=mcp_approved_configs,
                 runtime_factory=mcp_runtime_factory)
+    from tool_calling.backend import ToolChatBackend
+    from tool_calling.api import install_tool_chat
+    from tool_calling.models import ToolChatError
+
+    def prepare_tool_chat(session_id, message, language, reservations):
+        session, _created = acquire_session(session_id, create=False)
+        if session is None:
+            raise ToolChatError("session_not_found")
+        owner = "prepare-" + uuid4().hex
+        locked = False
+        try:
+            locked = session.lock.acquire(blocking=False)
+            if not locked:
+                raise ToolChatError("session_reserved")
+            require_live_session(session)
+            reservations.reserve(session_id, owner)
+            row = store.load(session_id)
+            if row is None:
+                raise ToolChatError("session_not_found")
+            prompt = RESPONSE_LANGUAGE_PROMPTS[language] if language else row["system_prompt"] or ai_controller.SYSTEM_PROMPT
+            content = message + ("\n\n[Response requirements]\n" + RESPONSE_LANGUAGE_TURN_INSTRUCTIONS[language] if language else "")
+            history = [{"role": "system", "content": prompt}]
+            history.extend({"role": item["role"], "content": item["content"]} for item in row["messages"])
+            history.append({"role": "user", "content": content})
+            first = message.strip().replace("\r", " ").replace("\n", " ")
+            title = row["title"] if row["titled"] else first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
+            return {"session_id": session_id, "revision": row["revision"], "reservation_owner": owner,
+                    "question": message, "language": language, "system_prompt": prompt, "title": title, "messages": history}
+        except Exception:
+            reservations.release(session_id, owner)
+            raise
+        finally:
+            if locked:
+                session.lock.release()
+            release_session(session_id, session)
+
+    def commit_tool_chat(initial, answer):
+        session_id = initial["session_id"]
+        session, _created = acquire_session(session_id, create=False)
+        if session is None:
+            raise ToolChatError("session_not_found")
+        try:
+            with session.lock:
+                require_live_session(session)
+                store.commit_turn(session_id, initial["revision"], user=initial["question"], answer=answer,
+                                  title=initial["title"], system_prompt=initial["system_prompt"], language=initial["language"])
+                session.revision = initial["revision"] + 1
+                session.title, session.titled = initial["title"], True
+                return session.revision
+        finally:
+            release_session(session_id, session, committed=True)
+
+    tool_backend = ToolChatBackend(mcp_service, session_revision=store.revision, prepare=prepare_tool_chat,
+                                   commit=commit_tool_chat, limits=tool_limits,
+                                   bindings_factory=(lambda: tool_bindings_factory(mcp_service)) if tool_bindings_factory else None)
+    app.extensions["tool_chat"] = tool_backend
+    install_tool_chat(app, tool_backend, guard=app.extensions["mcp_request_guard"])
     return app
 
 
@@ -649,4 +711,5 @@ if __name__ == "__main__":
     try:
         application.run(host=HOST, port=PORT, debug=False, use_reloader=False)
     finally:
+        application.extensions["tool_chat"].shutdown()
         application.extensions["mcp_service"].shutdown()

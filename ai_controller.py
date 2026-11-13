@@ -20,20 +20,28 @@ def check_ollama() -> None:
         raise ValueError("Invalid Ollama version response")
 
 
-def ask_ollama(messages: list[dict[str, str]]) -> dict[str, Any]:
-    payload = json.dumps({
+def ask_ollama(messages: list[dict[str, Any]], *, tools=None, timeout=None, response_limit=None) -> dict[str, Any]:
+    body = {
         "model": MODEL,
         "messages": messages,
         "stream": False,
         "think": False
-    }, ensure_ascii=False).encode("utf-8")
+    }
+    if tools is not None:
+        body["tools"] = tools
+    payload = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
     request = urllib.request.Request(
         OLLAMA_URL,
         data=payload,
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT if timeout is None else min(REQUEST_TIMEOUT, timeout)) as response:
+        if response_limit is not None:
+            raw = response.read(response_limit + 1)
+            if len(raw) > response_limit:
+                raise ValueError("Ollama response exceeds limit")
+            return json.loads(raw)
         return json.load(response)
 
 

@@ -148,6 +148,20 @@ class MCPManager:
                 raise MCPRuntimeError("mcp_operation_not_found", "MCP server has no operation history.")
             return worker.operation(operation_id)
 
+    def connection_generation(self, server_id):
+        """Opaque identity of this connection attempt, including reconnects."""
+        with self._lock:
+            self._config(server_id)
+            worker = self._workers.get(server_id)
+            return worker.ready.operation_id if worker else None
+
+    def connection_info(self, server_id):
+        from copy import deepcopy
+        with self._lock:
+            self._config(server_id)
+            worker = self._workers.get(server_id)
+            return deepcopy(worker.connection_info) if worker else None
+
     def _request(self, server_id, kind, payload, timeout):
         self._host.require_sync_caller()
         wait = self.call_timeout if timeout is None else _timeout(timeout)

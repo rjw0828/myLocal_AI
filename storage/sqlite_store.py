@@ -130,6 +130,12 @@ class SQLiteStore:
                 "SELECT role,content,language FROM messages WHERE session_id=? ORDER BY ordinal", (session_id,))]
             return result
 
+    def revision(self, session_id):
+        with self.connection() as db:
+            self.check_deleted(db, session_id)
+            row = db.execute("SELECT revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            return row[0] if row else None
+
     def create(self, session_id, *, explicit=False):
         with self.connection(write=True) as db:
             self.check_deleted(db, session_id)
