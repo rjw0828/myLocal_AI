@@ -134,6 +134,45 @@ class ToolChatBackendTests(unittest.TestCase):
         self.assertIn("English", self.ollama_calls[0][0]["content"])
         self.assertEqual(status["result"]["revision"], 1)
 
+    def test_model_alias_mapping_preserves_raw_tool_and_approval_boundary(self):
+        self.mode = "time"
+        job = self.start()
+        self.wait(job, {"WAITING_APPROVAL"})
+        entries = self.backend.core._job(job).catalog
+        alias, entry = next((a, e) for a, e in entries.items()
+                            if e["context"]["tool"]["name"] == "get_current_time")
+        self.assertRegex(alias, r"^time_get_current_time_[0-9a-f]{40}$")
+        self.assertEqual(entry["context"]["tool"]["description"], "get_current_time")
+        self.assertEqual(entry["schema"]["function"]["parameters"], self.schemas["get_current_time"])
+        self.assertEqual(self.time_scenario.calls, [])
+        self.assertEqual(self.history(), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem context")
+    def test_root_context_is_request_local_not_session_history_or_ordinary_chat(self):
+        job = self.start()
+        self.wait(job, {"COMPLETED"})
+        system = self.ollama_calls[0][0]["content"]
+        self.assertIn("Verified filesystem workspace data", system)
+        self.assertIn("not execution permission", system)
+        self.assertNotIn("Verified filesystem workspace data", str(self.history()))
+        row = self.app.extensions["session_store"].load(self.session)
+        self.assertNotIn("Verified filesystem workspace data", row["system_prompt"])
+        self.assertEqual(self.http("POST", "/chat", {"session_id": self.session, "message": "ordinary"}).status_code, 200)
+        self.assertNotIn("Verified filesystem workspace data", self.ollama_calls[-1][0]["content"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem context")
+    def test_changed_workspace_permission_prevents_stale_followup_context(self):
+        self.mode = "time"
+        job = self.start()
+        self.wait(job, {"WAITING_APPROVAL"})
+        self.mcp.set_permission(self.fs_id, "read_file", False)
+        self.assertEqual(self.approve(job).status_code, 202)
+        status = self.wait(job, {"FAILED"})
+        self.assertEqual(status["error_code"], "mcp_tool_permission_required")
+        self.assertFalse(status["reservation_owned"])
+        self.assertEqual(len(self.ollama_calls), 1)
+        self.assertEqual(self.history(), [])
+
     def test_time_call_waits_for_approval_and_reuses_grant_for_same_response(self):
         self.mode = "repeat"; job = self.start()
         pending = self.wait(job, {"WAITING_APPROVAL"})["pending"]

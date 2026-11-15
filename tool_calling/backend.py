@@ -12,6 +12,7 @@ from mcp_manager.models import MCPRuntimeError
 from mcp_manager.registry import canonical_json
 from .catalog import ToolCatalog
 from .models import JobState, TERMINAL, ToolChatError
+from .model_context import model_messages, present_catalog
 from .root_adapter import RootAdapter
 from .service import ToolChatService, SessionReservations
 
@@ -118,6 +119,9 @@ class ToolChatBackend:
                 if not work.catalog_ready:
                     deadline = status["created"] + self.core.limits.active_seconds
                     catalog = ToolCatalog(self.mcp, self.bindings_factory()).discover(deadline=deadline, clock=self.core.clock)
+                    # Freeze the model alias -> original identity map per Job.
+                    # Raw descriptions/schemas remain in the trusted context.
+                    catalog = present_catalog(catalog, aliases=True)
                     job = self.core._job(job_id)
                     with job.lock:
                         self.core._check(job)
@@ -134,10 +138,14 @@ class ToolChatBackend:
                         return
                     work.calls, work.call_index = [], 0
                 tools = self.core.tools(job_id)
+                # Refresh attested workspace metadata before every model request.
+                # Never append it to Work.messages or persisted Session History.
+                messages = model_messages(work.messages, self.core._job(job_id).catalog,
+                                          self.core.catalog.current)
                 timeout = self.core.remaining_seconds(job_id)
                 self.core.begin_ollama_request(job_id)
                 try:
-                    result = ai_controller.ask_ollama(work.messages, tools=tools, timeout=timeout, response_limit=1024 * 1024)
+                    result = ai_controller.ask_ollama(messages, tools=tools, timeout=timeout, response_limit=1024 * 1024)
                 except urllib.error.HTTPError:
                     self.core.end_ollama_request(job_id)
                     raise ToolChatError("ollama_model_error") from None
