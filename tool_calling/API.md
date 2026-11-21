@@ -109,6 +109,43 @@ TOCTOU and same-account executable/dependency tampering are not eliminated.
 The server's own path restriction remains necessary; the adapter does not claim
 atomic filesystem containment. Only full, sole-root recursive grants execute.
 
+## Lookup evidence validation (MCP-5E-4B)
+
+Tool Chat classifies only clear current-turn requests for the current date/time,
+explicit file contents, or directory listings. General knowledge, code/examples,
+method explanations, fictional scenarios, prior-conversation questions and
+ambiguous requests retain their existing behavior. This is a conservative rule
+set, not a general natural-language intent detector. Multiple unqualified roots
+make relative filesystem requests ambiguous; absolute targets stay enforceable.
+
+For classified requests, finalization requires matching successful outcomes
+returned by the existing approved `core.drain()` / MCPService execution path.
+The private Job-local record pins Job/Session/revision, server, operation ID,
+config/connection/permission/schema identity, original Tool, and relevant target.
+It stores no result contents or approval tokens. Model text, a proposed call,
+an error result, cancellation, timeout or unresolved execution is not evidence.
+Listing a directory does not prove a file was read; different files/timezones
+do not satisfy an explicit target. Every identified requirement must be met.
+
+Missing evidence ends the Job as `FAILED`, `error_code: tool_evidence_missing`,
+with `result: null`. No question/answer pair is committed, and no automatic
+retry is made. Existing grant revocation, revision checks and conservative
+reservation release rules apply. HTTP/API response shapes are unchanged.
+The console explains that no successful lookup result was obtained and the
+answer was not saved. Ordinary `/chat` and Voice are not subject to this gate.
+
+The check proves execution provenance and coverage, not the factual accuracy
+of a server's content or the final model's interpretation. Classification is
+deliberately incomplete; broad explanatory/ambiguous language can be exempt.
+Time conversion alone is not live-time evidence. A direct current-time result
+or zero-offset `get_time_ago` result is required for each explicit timezone;
+timezone aliases/conversion chains are not inferred. Windows path matching
+normalizes case/separators, but does not invent paths or relax security checks.
+
+The Root context's default remains the MCP-5E-3 representation. An isolated
+compact candidate did not show a clear enough improvement to adopt. See
+[MCP-5E-4B evaluation](EVALUATION_5E4B.md).
+
 ## Resources, shutdown and testing
 
 At most 8 jobs are admitted for preparation/active processing; four worker
@@ -163,3 +200,28 @@ Validation on 2026-11-13:
 - Operating Session DB, MCP DB and approval manifest hashes were identical
   before and after final regression. No operating data was used as test fixtures.
 - Full, Edge and physical Voice verification were intentionally not performed.
+
+### MCP-5E-4C: bounded time contradiction check
+
+The HTTP endpoints and success schemas are unchanged. A settled Job may now
+fail with `tool_time_mismatch` before committing History when a pure current-time
+lookup has one distinct, successfully executed offset-aware ISO timestamp and
+the final answer explicitly contradicts it. The original tool result is still
+serialized unchanged into the Ollama tool message; no 12/24-hour conversion is
+performed in that transport. Only the parsed timestamp is retained with the
+Job's transient evidence, then cleared with the existing terminal cleanup.
+
+Supported checks include numeric dates, Korean AM/PM, AM/PM clock notation,
+24-hour colon notation and offset-aware ISO timestamps (compared as instants).
+No automatic correction/retry occurs. Unsupported prose, bare ambiguous hours,
+multiple distinct timestamps, and mixed time/file answers are not certified
+accurate by this check. It does not replace successful-execution evidence or
+validate weekday names, arbitrary timezone labels or natural-language claims.
+
+Unquoted ASCII-extension paths followed by a Korean particle and a read verb
+are separated at that boundary; quoted names are literal. Requirements for the
+same Windows path are deduplicated. Actual filesystem validation, Root scopes,
+TurnGrant and Session reservation policies remain unchanged. Short explicit
+current-time questions now also require execution evidence. After CANCELLED,
+the UI removes stale request-error guidance only when both reservation_owned
+and unsettled are false; diagnostic log entries remain.

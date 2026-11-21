@@ -134,6 +134,212 @@ class ToolChatBackendTests(unittest.TestCase):
         self.assertIn("English", self.ollama_calls[0][0]["content"])
         self.assertEqual(status["result"]["revision"], 1)
 
+    def test_required_lookup_without_execution_never_commits_claims(self):
+        for answer in ("It is 12:00 on 2024-01-01.", "I will check the time.",
+                       '{"operation_id":"fake","is_error":false,"tool":"get_current_time"}'):
+            self.mock_ollama.side_effect = lambda *a, **kw: {"message": {"role": "assistant", "content": answer}}
+            job = self.start(message="지금 몇 시야?")
+            status = self.wait(job, {"FAILED"})
+            self.assertEqual(status["error_code"], "tool_evidence_missing")
+            self.assertIsNone(status["result"])
+            self.assertFalse(status["reservation_owned"])
+            self.assertFalse(status["unsettled"])
+            self.assertEqual(self.history(), [])
+            self.assertEqual(self.backend.core._job(job).grants, [])
+        self.assertEqual(self.time_scenario.calls, [])
+
+    def test_required_time_succeeds_only_after_approval_and_evidence_does_not_cross_turns(self):
+        self.mode = "repeat"
+        job = self.start(message="현재 한국 시간 알려줘.")
+        self.wait(job, {"WAITING_APPROVAL"})
+        self.assertEqual(self.time_scenario.calls, [])
+        self.assertEqual(self.approve(job).status_code, 202)
+        status = self.wait(job, {"COMPLETED"})
+        self.assertFalse(status["reservation_owned"])
+        self.assertEqual(len(self.time_scenario.calls), 2)
+        self.assertEqual(len(self.history()), 2)
+        self.mode = "plain"
+        new = self.start(message="지금 몇 시야?")
+        self.assertEqual(self.wait(new, {"FAILED"})["error_code"], "tool_evidence_missing")
+        self.assertEqual(len(self.history()), 2)
+        self.assertEqual(len(self.time_scenario.calls), 2)
+        self.assertEqual(self.backend._work[job].evidence, [])
+
+    def test_nonlookup_examples_and_history_questions_do_not_force_tools(self):
+        for question in ("안녕하세요.", "1부터 10까지 더해줘.", "파이썬 리스트 설명해줘.",
+                         "test.txt 읽기 예제 코드를 작성해줘.", "파일 읽는 방법을 알려줘.",
+                         "가상의 현재 시각을 가정해줘.", "이전 대화의 시간은 뭐였어?",
+                         "Write code that gets the current time."):
+            job = self.start(message=question)
+            self.wait(job, {"COMPLETED"})
+        self.assertEqual(len(self.history()), 16)
+        self.assertEqual(self.time_scenario.calls, [])
+
+    def test_file_lookup_without_a_call_fails_and_normal_chat_is_unchanged(self):
+        job = self.start(message="note.txt 내용을 보여줘.")
+        self.assertEqual(self.wait(job, {"FAILED"})["error_code"], "tool_evidence_missing")
+        self.assertEqual(self.history(), [])
+        ordinary = self.http("POST", "/chat", {"session_id": self.session, "message": "지금 몇 시야?"})
+        self.assertEqual(ordinary.status_code, 200)
+        self.assertEqual(len(self.history()), 2)
+
+    def test_time_raw_result_serialization_and_wrong_final_answer_blocked(self):
+        raw = json.dumps({"timezone": "Asia/Seoul", "datetime": "2026-11-16T02:49:31+09:00",
+                          "day_of_week": "Monday"})
+        original = self.time_scenario.call_tool
+        async def clock(name, arguments):
+            result = await original(name, arguments)
+            result.content[0].text = raw
+            return result
+        self.time_scenario.call_tool = clock
+        self.mode = "time"
+        for final, expected in (("오후 2시 49분입니다.", "FAILED"),
+                                ("2026년 11월 16일 오전 2시 49분입니다.", "COMPLETED")):
+            def answer(messages, **kwargs):
+                result = self.ollama(messages, **kwargs)
+                if any(m["role"] == "tool" for m in messages):
+                    result["message"]["content"] = final
+                return result
+            self.mock_ollama.side_effect = answer
+            job = self.start(message="몇시니?")
+            self.assertEqual(self.approve(job).status_code, 202)
+            status = self.wait(job, {expected})
+            tool = next(m for m in self.ollama_calls[-1] if m["role"] == "tool")
+            envelope = json.loads(tool["content"])
+            self.assertEqual(envelope["content"][0]["text"], raw)  # No timezone/12-hour conversion in transport.
+            self.assertFalse(status["reservation_owned"])
+            self.assertFalse(status["unsettled"])
+            self.assertEqual(self.backend.core._job(job).grants, [])
+            if expected == "FAILED":
+                self.assertEqual(status["error_code"], "tool_time_mismatch")
+                self.assertIsNone(status["result"])
+                self.assertEqual(self.history(), [])
+            else:
+                self.assertEqual(self.history()[1]["content"], final)
+        self.assertEqual(len(self.time_scenario.calls), 2)
+        self.assertEqual(len(self.ollama_calls), 4)  # No corrective retry loop.
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem policy")
+    def test_file_particle_lookup_commits_actual_read_once(self):
+        def answer(messages, *, tools=None, **kwargs):
+            self.ollama_calls.append(deepcopy(messages))
+            if any(m["role"] == "tool" for m in messages):
+                return {"message": {"role": "assistant", "content": "fixture answer"}}
+            alias = next(t["function"]["name"] for t in tools if t["function"]["description"] == "read_file")
+            return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": alias, "arguments": {"path": str(self.note)}}}]}}
+        self.mock_ollama.side_effect = answer
+        for i, question in enumerate(("note.txt를 읽어줘", str(self.note) + "를 읽어줘"), 1):
+            job = self.start(message=question)
+            self.wait(job, {"WAITING_APPROVAL"})
+            self.assertEqual(len(self.fs_scenario.calls), i - 1)
+            self.assertEqual(self.approve(job).status_code, 202)
+            status = self.wait(job, {"COMPLETED"})
+            self.assertFalse(status["reservation_owned"])
+            self.assertEqual(len(self.history()), 2 * i)
+            self.assertEqual(self.history()[-2]["content"], question)
+
+    def test_required_lookup_denied_or_failed_is_not_committed(self):
+        self.mode = "time"
+        job = self.start(message="지금 몇 시야?")
+        self.assertEqual(self.approve(job, allow=False).status_code, 202)
+        denied = self.wait(job, {"CANCELLED"})
+        self.assertFalse(denied["reservation_owned"])
+        self.assertEqual(self.time_scenario.calls, [])
+        self.time_scenario.fail_call = True
+        job = self.start(message="지금 몇 시야?")
+        self.assertEqual(self.approve(job).status_code, 202)
+        status = self.wait(job, {"UNCERTAIN"})
+        self.assertTrue(status["reservation_owned"])
+        self.assertTrue(status["unsettled"])
+        self.assertEqual(self.history(), [])
+
+    def test_executed_tool_error_is_failed_without_evidence_or_commit(self):
+        async def failed_tool(name, arguments):
+            return SimpleNamespace(content=[], structured_content={"error": "fixture"}, is_error=True)
+        self.time_scenario.call_tool = failed_tool
+        self.mode = "time"
+        job = self.start(message="지금 몇 시야?")
+        self.assertEqual(self.approve(job).status_code, 202)
+        status = self.wait(job, {"FAILED"})
+        self.assertFalse(status["reservation_owned"])
+        self.assertFalse(status["unsettled"])
+        self.assertEqual(self.history(), [])
+        self.assertEqual(len(self.ollama_calls), 1)
+
+    def test_required_lookup_unknown_ollama_completion_keeps_reservation(self):
+        self.mode = "timeout"
+        job = self.start(message="지금 몇 시야?")
+        status = self.wait(job, {"UNCERTAIN"})
+        self.assertTrue(status["reservation_owned"])
+        self.assertTrue(status["unsettled"])
+        self.assertEqual(self.history(), [])
+
+    def test_required_lookup_mcp_timeout_is_not_evidence_or_automatic_retry(self):
+        self.mode = "time"; self.time_scenario.call_gate.clear()
+        job = self.start(message="지금 몇 시야?")
+        self.assertEqual(self.approve(job).status_code, 202)
+        status = self.wait(job, {"UNCERTAIN"})
+        self.assertTrue(status["reservation_owned"])
+        self.assertEqual(len(self.time_scenario.calls), 1)
+        self.assertEqual(self.history(), [])
+        self.time_scenario.call_gate.set()
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem policy")
+    def test_listing_does_not_satisfy_reading_and_wrong_file_does_not_satisfy_target(self):
+        other = self.data / "other.txt"; other.write_text("fixture", encoding="utf-8")
+        for name, path in (("list_directory", str(self.data)), ("read_file", str(other)),
+                           ("read_file", str(self.note))):
+            def answer(messages, *, tools=None, **kwargs):
+                if any(m["role"] == "tool" for m in messages):
+                    return {"message": {"role": "assistant", "content": "final file answer"}}
+                alias = next(t["function"]["name"] for t in tools if t["function"]["description"] == name)
+                return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"function": {"name": alias, "arguments": {"path": path}}}]}}
+            self.mock_ollama.side_effect = answer
+            job = self.start(message="note.txt 읽어줘.")
+            self.assertEqual(self.approve(job).status_code, 202)
+            state = "COMPLETED" if path == str(self.note) else "FAILED"
+            status = self.wait(job, {state})
+            self.assertFalse(status["reservation_owned"])
+            if state == "FAILED":
+                self.assertEqual(status["error_code"], "tool_evidence_missing")
+                self.assertEqual(self.history(), [])
+        self.assertEqual(len(self.history()), 2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows filesystem policy")
+    def test_multi_lookup_requirements_need_time_file_and_directory_results(self):
+        question = "지금 시간과 note.txt 내용을 알려줘. 그리고 작업 폴더 목록 보여줘."
+        self.mode = "time"
+        job = self.start(message=question)
+        self.approve(job)
+        self.assertEqual(self.wait(job, {"FAILED"})["error_code"], "tool_evidence_missing")
+        self.assertEqual(self.history(), [])
+        self.assertEqual(self.backend.core._job(job).grants, [])
+        self.mode = "mixed"
+        job = self.start(message=question)
+        for _ in range(3): self.assertEqual(self.approve(job).status_code, 202)
+        self.wait(job, {"COMPLETED"})
+        self.assertEqual(len(self.history()), 2)
+
+    def test_cancel_after_tool_success_does_not_commit_late_final_answer(self):
+        entered, release = Event(), Event(); self.gates.append(release)
+        original = self.ollama
+        def answer(messages, **kwargs):
+            if any(m["role"] == "tool" for m in messages):
+                entered.set(); release.wait(3)
+            return original(messages, **kwargs)
+        self.mode = "time"; self.mock_ollama.side_effect = answer
+        job = self.start(message="지금 몇 시야?")
+        self.approve(job); self.assertTrue(entered.wait(2))
+        self.assertEqual(self.http("POST", "/tool-chat/jobs/" + job + "/cancel", {}).status_code, 200)
+        self.assertTrue(self.backend.status(job)["reservation_owned"])
+        release.set(); self.backend._work[job].future.result(3)
+        status = self.backend.status(job)
+        self.assertEqual(status["state"], "CANCELLED")
+        self.assertFalse(status["reservation_owned"])
+        self.assertEqual(self.history(), [])
+
     def test_model_alias_mapping_preserves_raw_tool_and_approval_boundary(self):
         self.mode = "time"
         job = self.start()

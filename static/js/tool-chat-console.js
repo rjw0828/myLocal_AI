@@ -91,7 +91,8 @@
       const note = r.blocked ? " · Session reserved" : "";
       const names = { RUNNING: "Running", WAITING_APPROVAL: "Waiting for approval", COMPLETED: "Completed",
         FAILED: "Failed", CANCELLED: "Cancelled", UNCERTAIN: "UNCERTAIN · Server completion must be verified" };
-      return `${names[r.state] || r.localState || "Unknown"}${r.restored && r.blocked ? " · Restored job; approval not restored. Cancel or check status" : ""}${r.cancelIntent ? " · Cancel requested" : ""}${note}${r.errorCode ? ` · ${r.errorCode}` : ""}${r.verificationRequired ? " · Check status required" : ""}`;
+      const code = ["tool_evidence_missing", "tool_time_mismatch"].includes(r.errorCode) ? this.errorText({ code: r.errorCode }) : r.errorCode;
+      return `${names[r.state] || r.localState || "Unknown"}${r.restored && r.blocked ? " · Restored job; approval not restored. Cancel or check status" : ""}${r.cancelIntent ? " · Cancel requested" : ""}${note}${code ? ` · ${code}` : ""}${r.verificationRequired ? " · Check status required" : ""}`;
     }
     render() {
       const r = this.current(), n = this.nodes;
@@ -99,7 +100,10 @@
       n.status.title = n.status.textContent;
       n.output.textContent = r ? `Tool Chat · ${this.describe(r)}` : "";
       const last = r && this.lastErrors.get(r.sessionId);
-      if (last && last.jobId === r.jobId) n.output.textContent += ` · Last request error: ${this.errorText(last.error)}`;
+      if (last && last.jobId === r.jobId && !(r.state === "CANCELLED" && !r.blocked
+          && r.reservation_owned === false && r.unsettled === false)) {
+        n.output.textContent += ` · Last request error: ${this.errorText(last.error)}`;
+      }
       n.cancel.disabled = !this.startingSession && (!r || !r.blocked || r.cancelling);
       n.cancel.textContent = r?.cancelIntent ? "Retry Cancel" : "Cancel";
       n.check.disabled = !r || !r.jobId || r.polling || r.approving || r.cancelling || r.reconciling;
@@ -115,6 +119,9 @@
     receive(name, event) {
       if (name === "state") {
         if (event.creating) this.lastErrors.delete(event.sessionId);
+        if (event.state === "CANCELLED" && event.reservation_owned === false && event.unsettled === false) {
+          this.lastErrors.delete(event.sessionId);
+        }
         const key = `${event.state}:${event.reservation_owned}:${event.unsettled}:${event.localState}`;
         if (this.lastStates.get(event.jobId || event.sessionId) !== key) {
           this.lastStates.set(event.jobId || event.sessionId, key);
@@ -131,7 +138,8 @@
           this.syncHistory(event.sessionId);
         }
       } else if (name !== "approval") {
-        this.log(name === "failed" || name === "uncertain" ? "ERROR" : "INFO", `${name}${event.code ? ` · ${event.code}` : ""}`);
+        const code = ["tool_evidence_missing", "tool_time_mismatch"].includes(event.code) ? this.errorText({ code: event.code }) : event.code;
+        this.log(name === "failed" || name === "uncertain" ? "ERROR" : "INFO", `${name}${code ? ` · ${code}` : ""}`);
       }
       this.render();
       if (name === "approval" && this.matches(event)) {
@@ -150,6 +158,8 @@
         stale_approval: "Approval changed. Check status and review the new proposal.",
         operation_unresolved: "MCP completion is not confirmed. No replay or automatic recovery.",
         job_timeout: "Job timed out. Check whether its reservation is still owned.",
+        tool_evidence_missing: "No successful result for the requested lookup. The answer was not saved. No automatic retry was performed.",
+        tool_time_mismatch: "The answer contradicts the returned time. The answer was not saved. No automatic retry was performed.",
         network_failure: "Network failure. Do not resend the Job; check status.",
         request_timeout: "Request timed out. Server work may still continue.",
         creation_uncertain: "Job ID unavailable. Server verification required; no recovery lookup is supported.",

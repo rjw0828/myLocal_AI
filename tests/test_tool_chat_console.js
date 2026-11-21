@@ -142,6 +142,18 @@ test("FAILED and UNCERTAIN never render final answers; uncertainty stays blocked
     assert.equal(f.nodes.message.disabled, state === "UNCERTAIN");
   }
 });
+
+test("missing evidence explains failure without answer, retry or a stuck input", async () => {
+  const f = await setup(); await f.start();
+  Object.assign(f.state(), { state: "FAILED", error_code: "tool_evidence_missing", reservation_owned: false, unsettled: false });
+  await f.check(); await f.check();
+  assert.match(f.nodes["tool-chat-status"].textContent, /No successful result.*answer was not saved/);
+  assert.match(text(f.nodes["output-log"]), /tool_evidence_missing.*No successful result/);
+  assert.equal(f.nodes["conversation-output"].querySelectorAll(".is-assistant").length, 0);
+  assert.equal(f.nodes.message.disabled, false);
+  assert.equal(count(f, "/tool-chat/jobs"), 1);
+  assert.equal(count(f, jobUrl + "/approval"), 0);
+});
 test("A to B to A cancels previous job and late completion never appends its answer", async () => {
   const f = await setup({ extraSessions: [{ session_id: "B", number: 2, title: "B" }] }); await f.start();
   const d = deferred(); f.handlers[jobUrl] = () => d.promise; const checked = f.nodes["tool-chat-check"];
@@ -417,6 +429,32 @@ test("invalid path approval error remains visible after polling, with Cancel and
   await chooseSession(f, "B"); f.nodes["tool-chat-mode"].click(); f.input("message", "B unaffected"); enter(f); await flush();
   assert.equal(count(f, "/chat"), 1);
 });
+test("cancel clears old approval error only after confirmed reservation release", async () => {
+  for (const reserved of [true, false]) {
+    const f = await setup(); await f.start(); await f.waiting();
+    f.handlers[jobUrl + "/approval"] = () => packet({ error: { code: "filesystem_invalid_path" } }, 400);
+    f.nodes["tool-chat-allow"].click(); await flush();
+    assert.match(f.nodes["tool-chat-output-status"].textContent, /filesystem_invalid_path/);
+    f.handlers[jobUrl + "/cancel"] = () => {
+      Object.assign(f.state(), { state: "CANCELLED", cancelled: true, pending: null,
+        reservation_owned: reserved, unsettled: reserved });
+      return packet({ job: f.state() });
+    };
+    f.nodes["tool-chat-cancel"].click(); await flush();
+    const output = f.nodes["tool-chat-output-status"].textContent;
+    assert.match(output, /Cancelled/);
+    assert.equal(f.nodes.message.disabled, reserved);
+    assert.equal(f.nodes["tool-chat-dialog"].open, false);
+    if (reserved) assert.match(output, /filesystem_invalid_path/);
+    else {
+      assert.ok(!output.includes("Last request error"));
+      assert.ok(!output.includes("Session reserved"));
+      assert.ok(!output.includes("session stays reserved"));
+    }
+    assert.match(text(f.nodes["output-log"]), /filesystem_invalid_path/); // Diagnostic history stays intact.
+  }
+});
+
 test("each failed approval HTTP request logs once, without merging separate same-code requests", async () => {
   const f = await setup(); await f.start(); await f.waiting();
   f.handlers[jobUrl + "/approval"] = () => packet({ error: { code: "filesystem_invalid_path", message: "private" } }, 400);

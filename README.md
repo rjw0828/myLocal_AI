@@ -2,6 +2,10 @@
 
 ## MCP-1/2/3 개발 브랜치 추가 기능
 
+MCP-5E-4B에서는 Tool Chat의 명확한 현재 시각·파일 내용·디렉터리 목록 조회에 실행 근거 검증을 추가했습니다. 승인된 MCP 실행의 성공 결과가 요청 대상과 일치해야 완료·저장하며, 근거가 없으면 `FAILED / tool_evidence_missing`으로 종료합니다. 자동 실행·자동 승인·재시도는 추가하지 않았습니다. 일반 Chat과 Voice는 기존 경로를 유지합니다. Root 문맥 후보는 실모델 비교에서 개선이 충분히 확인되지 않아 기본 표현을 유지했습니다. 적용 범위와 제한은 [API 문서](tool_calling/API.md), 검증 결과는 [MCP-5E-4B 보고서](tool_calling/EVALUATION_5E4B.md)를 참고하세요.
+
+MCP-5E-4C는 `test.txt를`과 절대경로 뒤의 한국어 조사로 생기던 중복 조회 요건을 수정하고, `몇시니?`·`몇시더라?`를 현재 시각 조회로 분류합니다. 실제 파일명에 조사가 포함되면 따옴표로 감싸 원문을 보존할 수 있습니다. Time 성공 결과의 명시적인 offset-aware ISO 시각과 최종 답변의 판별 가능한 날짜·시각이 모순되면 `FAILED / tool_time_mismatch`로 종료하고 저장하지 않습니다. 이는 실행 근거 검증에 추가한 제한적인 모순 검사이며, 모든 자연어 답변의 정확성을 보장하지 않습니다. 복수 시각·혼합 파일 답변·해석 불가능한 표현은 검사 범위 밖입니다. 취소 후 예약이 해제됐다고 서버가 확인한 경우에만 이전 요청 오류 안내를 제거합니다. 실제 Qwen/Edge End-to-End 재검증은 별도로 필요합니다.
+
 MCP-5C Backend 통합과 MCP-5D-3 Tool Chat UI 연결을 추가했습니다. D의 **Tool Chat OFF/ON**은 기본 OFF이며, ON 상태에서 Enter를 누르면 `/tool-chat/jobs`를 사용합니다. 승인 Dialog에서 서버·도구·인수·실제 Root 범위를 확인한 뒤 Allow/Deny를 선택합니다. Close/Esc는 승인·거부가 아니라 Dialog만 닫습니다. 승인 내용이 바뀌면 Review approval로 다시 확인해야 합니다. E에는 진행 상태와 완료된 최종 답변, F에는 민감한 인수를 제외한 기술 로그를 표시합니다. HTTP 202는 접수일 뿐 완료가 아닙니다. 성공한 질문·최종 답변만 SQLite에 저장하며 History로 동기화합니다. Root 확인 실패 시 Filesystem은 실행하지 않으며 전체 단일 Root 승인 제한을 유지합니다. 계약과 운영 제한은 [MCP-5C API 문서](tool_calling/API.md), UI·복구 정책은 [클라이언트 문서](tool_calling/CLIENT.md)를 참고하세요.
 
 MCP-5B에서 Job·Session 예약 인터페이스·TurnGrant·도구 Catalog·보수적인 Windows 경로 정책의 독립 Python 코어를 구현했습니다. 이후 MCP-5C에서 Backend·Root 확인 어댑터·세션 이벤트, MCP-5D-3에서 수동 Tool Chat 전송·Web 승인을 연결했습니다. 일반 Chat·수동 STT·기존 Play TTS는 유지합니다. Tool Chat과 자동 Voice Conversation은 동시에 시작할 수 없으며 Tool Chat에 자동 TTS는 추가하지 않았습니다. MCP-5D-4에서는 Reset/Delete/Delete All 사용자 확인 후 대상 Job의 Cancel과 새로운 GET 상태 확인을 먼저 수행합니다. 예약 또는 미확정 작업이 남거나 검증이 실패하면 데이터 변경 요청을 보내지 않습니다. 취소 확인 후에도 `reservation_owned=false`, `unsettled=false` 확인이 필요하며 Backend의 기존 예약/revision 검증은 유지됩니다. 코어 계약과 제한은 [MCP-5B 코어 문서](tool_calling/README.md)를 참고하세요.

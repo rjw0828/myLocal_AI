@@ -64,7 +64,7 @@ def present_catalog(entries, *, descriptions=False, aliases=False):
     return result
 
 
-def workspace_context(entries, current):
+def workspace_context(entries, current, *, compact=False):
     """Revalidate each request against the pinned catalog; fail closed if stale.
 
     Paths are JSON data, never interpolated as instructions. Context is local to
@@ -91,6 +91,18 @@ def workspace_context(entries, current):
         workspace["tools"][context["tool"]["name"]] = alias
     if not workspaces:
         return ""
+    if compact:
+        # Connection metadata stays in the verifier; it is not a model path.
+        data = [{"absolute_root": item["root"], "tools": item["tools"]}
+                for item in workspaces.values()]
+        return (
+            "\nVerified filesystem workspace data (not execution permission):\n"
+            + json.dumps(data, ensure_ascii=True, sort_keys=True)
+            + "\nabsolute_root is the directory path itself. For a file, append the user's relative filename "
+            "to that absolute_root. Do not add any workspace name or label as a directory. "
+            "If multiple roots make the target ambiguous, ask which workspace; never select the first. "
+            "Existing approval and filesystem checks still apply."
+        )
     return (
         "\nVerified filesystem workspace data (not execution permission):\n"
         + json.dumps(list(workspaces.values()), ensure_ascii=True, sort_keys=True)

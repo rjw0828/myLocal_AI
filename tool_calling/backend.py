@@ -15,6 +15,7 @@ from .models import JobState, TERMINAL, ToolChatError
 from .model_context import model_messages, present_catalog
 from .root_adapter import RootAdapter
 from .service import ToolChatService, SessionReservations
+from .selection_policy import applicable, execution_evidence, requirements, satisfied, time_answer_consistent
 
 METRIC_FIELDS = ("total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration")
 TOOL_RULES = (
@@ -36,6 +37,8 @@ class Work:
     wake: bool = False
     future: object = None
     catalog_ready: bool = False
+    requirements: tuple = ()
+    evidence: list = field(default_factory=list)
 
 
 class ToolChatBackend:
@@ -82,7 +85,7 @@ class ToolChatBackend:
                         self._work.pop(old, None)
                 messages = deepcopy(initial["messages"])
                 messages[0]["content"] += TOOL_RULES
-                self._work[job_id] = Work(initial, messages)
+                self._work[job_id] = Work(initial, messages, requirements=requirements(initial["question"]))
                 if self._timer is None:
                     self._timer = Thread(target=self._sweep, name="local-ai-tool-expiry", daemon=True)
                     self._timer.start()
@@ -126,11 +129,17 @@ class ToolChatBackend:
                     with job.lock:
                         self.core._check(job)
                         job.catalog = catalog
+                        work.requirements = applicable(work.requirements, catalog)
                         work.catalog_ready = True
                 if work.calls:
                     outcomes = self.core.drain(job_id)
                     for outcome in outcomes:
                         alias = work.calls[work.call_index]["name"]
+                        entry = self.core._job(job_id).catalog[alias]
+                        proof = execution_evidence(entry, work.calls[work.call_index]["arguments"], outcome,
+                            job_id=job_id, session_id=status["session_id"], revision=work.initial["revision"])
+                        if proof is not None:
+                            work.evidence.append(proof)
                         work.messages.append({"role": "tool", "tool_name": alias, "content": canonical_json(outcome["result"])})
                         work.call_index += 1
                     status = self.core.snapshot(job_id)
@@ -167,6 +176,14 @@ class ToolChatBackend:
                     work.calls, work.call_index = calls, 0
                     continue
                 metrics = self._metrics(result)
+                if not satisfied(work.requirements, work.evidence, job_id=job_id,
+                                 session_id=status["session_id"], revision=work.initial["revision"],
+                                 catalog=self.core._job(job_id).catalog):
+                    # No retry or invented fallback. Existing failure handling
+                    # revokes grants/releases only confirmed-settled reservations.
+                    raise ToolChatError("tool_evidence_missing")
+                if not time_answer_consistent(msg["content"], work.requirements, work.evidence):
+                    raise ToolChatError("tool_time_mismatch")
                 def commit():
                     saved = self.commit(work.initial, msg["content"])
                     work.result = {"session_id": status["session_id"], "model": ai_controller.MODEL,
@@ -312,6 +329,7 @@ class ToolChatBackend:
         with self._lock:
             if not work.running and JobState(status["state"]) in TERMINAL:
                 work.initial, work.messages, work.calls = None, [], []
+                work.requirements, work.evidence = (), []
 
     def _sweep(self):
         while not self._stop.wait(0.5):

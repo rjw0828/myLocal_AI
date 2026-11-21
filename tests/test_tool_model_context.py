@@ -180,6 +180,29 @@ class ModelContextTests(unittest.TestCase):
             self.assertIn("workspace-2", text)
             self.assertIn("ask which workspace", text)
             self.assertIn("never select the first", text)
+            candidate = workspace_context(left | right, catalog.current, compact=True)
+            self.assertEqual(candidate.count('"absolute_root":'), 2)
+            self.assertNotIn("workspace-1", candidate)
+            self.assertIn("ask which workspace", candidate)
+
+    @unittest.skipUnless(os.name == "nt", "Windows path policy")
+    def test_compact_candidate_keeps_verified_paths_and_tool_mapping_without_labels(self):
+        with TemporaryDirectory() as folder:
+            entries, catalog = self.filesystem(folder)
+            before = deepcopy(next(iter(entries.values()))["schema"])
+            original = workspace_context(entries, catalog.current)
+            candidate = workspace_context(entries, catalog.current, compact=True)
+            self.assertIn('"absolute_root":', candidate)
+            self.assertNotIn("workspace-1", candidate)
+            self.assertNotIn("connection_generation", candidate)
+            self.assertIn('"read_file":', candidate)
+            self.assertIn("not execution permission", candidate)
+            self.assertEqual(next(iter(entries.values()))["schema"], before)
+            # The default remains the measured baseline: candidate was not adopted.
+            self.assertEqual(workspace_context(entries, catalog.current), original)
+            self.mcp.contexts["fs", "read_file"]["connection_generation"] = "new"
+            with self.assertRaises(ToolChatError):
+                workspace_context(entries, catalog.current, compact=True)
 
 
 if __name__ == "__main__":
