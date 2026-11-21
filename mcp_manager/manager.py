@@ -37,6 +37,7 @@ class MCPManager:
                 raise ValueError("duplicate server registration")
             self._configs[config.server_id] = config
         self._workers = {}
+        self._single_ids = set()
         self._lock, self._shutdown_lock = RLock(), Lock()
         self._closing, self._closed = False, False
         self._client_factory = _client_factory
@@ -140,6 +141,15 @@ class MCPManager:
             worker = self._workers.get(server_id)
             return worker.snapshot() if worker else ServerStatus(server_id, ServerState.STOPPED)
 
+    def connection_generation(self, server_id):
+        """Current transport identity; never an execution grant."""
+        with self._lock:
+            self._config(server_id)
+            worker = self._workers.get(server_id)
+            if worker is None or worker.snapshot().state != ServerState.RUNNING:
+                raise MCPRuntimeError("mcp_not_ready", "MCP server is not running.")
+            return worker.connection_generation
+
     def get_operation(self, server_id, operation_id):
         with self._lock:
             self._config(server_id)
@@ -181,6 +191,32 @@ class MCPManager:
         except (TypeError, ValueError, RecursionError):
             raise ValueError("arguments must be a finite JSON object of at most 64 KiB") from None
         return self._request(server_id, "call", (name, arguments), timeout)
+
+    def call_tool_once(self, server_id, name, arguments, *, operation_id, before_send, timeout=None):
+        """Preparation only: owned single dispatch accepts the exact memory factory."""
+        from agent_poc.owner_runtime import OwnerFakeFactory
+        from agent_poc.readiness_gate import PreparedMemoryFactory
+        from agent_poc.live_transport import ReviewedFactory
+        from .single_dispatch import SingleDispatch
+        if type(self._client_factory) not in (OwnerFakeFactory, PreparedMemoryFactory, ReviewedFactory):
+            raise MCPRuntimeError("mcp_execution_bridge_disabled", "Real single dispatch is not enabled.")
+        self._host.require_sync_caller()
+        wait = self.call_timeout if timeout is None else _timeout(timeout)
+        payload = SingleDispatch(name, deepcopy(arguments), before_send)
+        with self._lock:
+            self._require_open(); self._config(server_id)
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError("operation_id is required")
+            if operation_id in self._single_ids:
+                raise MCPRuntimeError("mcp_duplicate_operation", "Operation ID was already reserved.")
+            if len(self._single_ids) >= 512:
+                raise MCPRuntimeError("mcp_operation_limit", "Single-dispatch retention limit.")
+            worker = self._workers.get(server_id)
+            if worker is None:
+                raise MCPRuntimeError("mcp_not_ready", "No connection owner.")
+            self._single_ids.add(operation_id)
+            item = worker.enqueue("call_once", payload, operation_id=operation_id)
+        return self._wait(worker, item, wait)
 
     def shutdown(self):
         self._host.require_sync_caller()

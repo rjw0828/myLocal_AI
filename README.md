@@ -1,5 +1,7 @@
 # Local AI Lab — Base Framework v1.0
 
+이 Worktree는 `feature/agent-framework-experiment`의 독립 실험입니다. Pydantic AI 가상 도구 PoC의 실행 방법과 제한은 [agent_poc/README.md](agent_poc/README.md)를 참고하세요. 운영 Console·MCP·Session·Voice에는 연결하지 않습니다.
+
 ## MCP-1/2/3 개발 브랜치 추가 기능
 
 Base Framework v1.0 이후 `feature/mcp-manager`에서 MCP-1 Core Runtime과 MCP-2 Registry/Flask API를 추가했습니다. MCP 전용 DB는 `data/mcp_registry.sqlite3`이며 기존 Session DB와 스키마는 변경하지 않습니다. 로컬 소유자가 승인한 stdio 실행 프로필만 등록하고, 도구별 기본 거부 권한과 인수에 묶인 일회용 승인 토큰으로 수동 호출합니다. 재시작 시 등록·권한만 복원하고 서버는 자동 실행하지 않습니다.
@@ -699,3 +701,5 @@ $env:LOCAL_AI_DB_PATH = Join-Path $env:TEMP ("local-ai-delete-all-" + (Get-Date 
 ## Base Framework v1.0 완료 상태
 
 STEP 5 UI/Session 관리, STEP 6-1~6-4 로컬 STT/TTS·수동/자동 음성 대화, STEP 7 SQLite 저장·Reset/Delete/Delete All·재시작 복원 및 기본 안정성 검증을 완료했습니다. 사용자 최종 Edge 실기기 검증은 7/7 통과이며 최근 자동 테스트는 215개 통과입니다. 검색 기반 장기 기억, MCP·자동 Tool Calling, 모델 선택 및 주변기기 확장은 포함하지 않습니다.
+
+?? STEP C-2: Generic MCP Catalog? Pydantic AI FunctionToolset Bridge? ??????. ?? MCP ??? ?? ???? ?? Console? ???? ????. [?? ??](agent_poc/MCP_BRIDGE.md)? [113? ?? ??? ??](agent_poc/RESULTS_C2.md)? ?????.

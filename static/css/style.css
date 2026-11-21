@@ -165,6 +165,12 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
 .voice-mode-controls button, .voice-mode-controls select { min-height: 23px; min-width: 0; padding: 3px 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); font-size: .6rem; cursor: pointer; }
 .voice-mode-controls button[aria-pressed="true"] { background: var(--accent-pale); border-color: var(--accent); color: var(--accent-dark); }
 .voice-mode-controls :disabled { opacity: .6; cursor: not-allowed; }
+.tool-chat-controls { align-items: center; }
+.tool-chat-controls [role="status"] { flex: 1; min-width: 0; font-size: .65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-chat-output-status { margin: 2px 0; padding: 0 14px; font-size: .72rem; overflow-wrap: anywhere; max-height: 3em; overflow: auto; flex-shrink: 0; }
+.tool-chat-output-status:empty { display: none; }
+.tool-chat-review dd { margin: 3px 0 12px; overflow-wrap: anywhere; }
+.tool-chat-review pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 .input-panel .panel-heading.compact { margin-bottom: 3px; }
 .session-controls { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 5px; }
 .session-controls button, .session-list-footer button { flex: 0 0 auto; min-height: 26px; padding: 4px 8px; border: 1px solid #bcd8c8; border-radius: 7px; background: var(--accent-pale); color: var(--accent-dark); font-size: .66rem; font-weight: 750; cursor: pointer; }

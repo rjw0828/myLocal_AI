@@ -31,9 +31,10 @@ class Element {
 const deferred = () => { let resolve; const promise = new Promise((yes) => { resolve = yes; }); return { promise, resolve }; };
 const flush = async () => { for (let i = 0; i < 25; i += 1) await Promise.resolve(); };
 const packet = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
-function fixture() {
+function fixture(managed = false) {
   const html = fs.readFileSync(path.join(__dirname, "../templates/index.html"), "utf8"), nodes = {};
   for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*\bid="([^"]+)"/g)) nodes[match[2]] = new Element(match[1]);
+  nodes["tool-chat-mode"].dataset.agentEnabled = String(managed);
   const requests = [], prompts = [], handlers = {}, stored = new Map(), timers = [], copied = [];
   const clipboard = { writeText: async (value) => { copied.push(value); } };
   const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, status: { state: "RUNNING" } };
@@ -47,6 +48,7 @@ function fixture() {
     if (url === "/mcp/servers" && options.method === "GET") return packet({ servers: registrations });
     if (url === "/mcp/servers" && options.method === "POST") { server.status.state = "STOPPED"; return packet({ server }, 201); }
     if (url.endsWith("/start")) { server.status.state = "RUNNING"; return packet({ server }); }
+    if (url.endsWith("/connect")) { server.status.state = "RUNNING"; return packet({ result: { started: true } }); }
     if (url.endsWith("/stop")) { server.status.state = "STOPPED"; return packet({ server }); }
     if (options.method === "DELETE") { registrations = []; return packet({ status: "deleted" }); }
     if (url.endsWith("/permission")) { info.allowed = data.allowed; return packet(data); }
@@ -101,6 +103,15 @@ test("Start/Stop/Delete respect lifecycle and delete cancellation", async () => 
   await f.button("servers", "Stop").fire(); f.confirm(false); await f.button("servers", "Delete").fire();
   assert.equal(f.requests.filter((r) => r.options.method === "DELETE").length, 0);
   f.confirm(true); await f.button("servers", "Delete").fire(); assert.match(f.nodes["mcp-servers"].textContent, /No registered/);
+});
+test("Agent host routes lifecycle and permissions through MCPManagement", async () => {
+  const f = fixture(true); await f.ui.open(); await f.button("servers", "Stop").fire();
+  await f.button("servers", "Start").fire(); await f.button("servers", "Tools").fire();
+  await f.button("tools", "Allow tool").fire();
+  assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/connect")));
+  assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/stop")));
+  assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/tools/echo/permission")));
+  assert.equal(calls(f, "/call").length, 0);
 });
 test("tools display live schema and default denial; grant/revoke are explicit", async () => {
   const f = fixture(); await f.ui.open(); await f.button("servers", "Tools").fire();

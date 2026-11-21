@@ -25,6 +25,8 @@ def main():
         print("No command is executed by this approval script.")
         for key in ("name", "transport", "executable", "args", "cwd"):
             print(key + " (JSON): " + json.dumps(record[key], ensure_ascii=True))
+        if record.get('env'):
+            print('Environment keys (values hidden): ' + json.dumps(sorted(record['env']),ensure_ascii=True))
         print("Approval file: " + json.dumps(str(options.approvals_file.resolve()), ensure_ascii=True))
         return input("Type APPROVE " + record["request_id"] + " to persist this exact configuration: ").strip() == "APPROVE " + record["request_id"]
 
