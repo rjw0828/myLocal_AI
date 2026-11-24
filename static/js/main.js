@@ -1203,7 +1203,7 @@ document.addEventListener("DOMContentLoaded", () => {
     resetSessionButton.disabled = !sessionId || unavailable || requestRunning || (voiceBusy && !automatic);
     ttsLanguage.disabled = voiceBusy;
     voiceModeButton.disabled = modelChanging || requestRunning || toolBlocked || Boolean(toolChat?.enabled) || (voiceBusy && !automatic);
-    $("#tool-chat-mode").disabled = requestRunning || voiceBusy || voiceModeEnabled;
+    $("#tool-chat-mode").disabled = $("#tool-chat-mode").dataset.agentEnabled !== "true" || requestRunning || voiceBusy || voiceModeEnabled;
     cancelVoiceTurnButton.disabled = !automatic;
     const messages = conversations.get(currentConversationSession) || [];
     conversationOutput.querySelectorAll(".tts-play-button").forEach((button) => {
@@ -1593,11 +1593,11 @@ document.addEventListener("DOMContentLoaded", () => {
       request: async (path, options) => requireSuccess(await requestJson(path, {
         ...options, headers: { "X-Local-AI-Control": "web-console", ...(options.headers || {}) },
       })),
-      onSelected: model => { configuredModel.textContent = model; serverModel.textContent = model; },
+      onSelected: model => { configuredModel.textContent = model; serverModel.textContent = model; $("#agent-model-name").textContent = model; },
       onChanging: () => updateInputState(),
     });
     modelRefreshTimer = window.setInterval(() => {
-      if (!serverView.hidden) modelControls.refresh();
+      if (!serverView.hidden) { modelControls.refresh(); }
     }, 30_000);
   }
 

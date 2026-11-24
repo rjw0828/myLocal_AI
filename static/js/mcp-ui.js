@@ -64,7 +64,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     ui["raw-mode"].disabled = busy || !argumentForm?.supported;
     if (argumentForm) argumentForm.setDisabled(busy);
     const server = currentServer();
-    ui.execute.disabled = busy || !visible || !server?.execution_approved || state(server) !== "RUNNING" || !tool?.allowed || pending.has(selected);
+    ui.execute.disabled = busy || !visible || !tool || !server?.execution_approved || state(server) !== "RUNNING" || !server?.enabled || pending.has(selected);
     ui.operation.hidden = !pending.get(selected);
     ui.operation.disabled = busy;
     for (const button of ui.servers.querySelectorAll("button")) button.disabled = busy || button.dataset.unavailable === "true";
@@ -111,8 +111,13 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       const id = server.server_id, row = make("tr"), actions = make("td");
       row.append(make("td", server.name), make("td", `Approved profile: ${server.profile_id}`), make("td", server.transport),
         make("td", `${state(server)}${pending.has(id) ? " · completion unconfirmed" : ""}${server.execution_approved ? "" : " · profile not approved"}`));
+      button(actions, server.enabled ? "Enabled ON" : "Enabled OFF", async () => {
+        await request(`${base(id)}/enabled`, "PUT", { enabled: !server.enabled });
+        if (selected === id) clearTools();
+        await loadServers();
+        announce("SUCCESS", "서버 Enabled 설정 저장 완료. 연결 상태는 별도입니다.");
+      }, pending.has(id));
       button(actions, "Start", async () => {
-        if (managed && !confirm(`Start and discover '${server.name}'? This launches the reviewed server but calls no Tool.`)) return;
         announce("RUNNING", "Starting selected MCP server.");
         await request(managed ? `${management(id)}/connect` : `${base(id)}/start`, "POST", managed ? { confirmed: true } : {});
         await loadServers(); announce("SUCCESS", "MCP server started and discovery completed.");
@@ -124,7 +129,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       }, state(server) === "STOPPED" && !pending.has(id));
       button(actions, "Tools", async () => selectServer(id), state(server) !== "RUNNING" || !server.execution_approved);
       button(actions, "Delete", async () => {
-        if (!confirm(`Delete MCP registration '${server.name}' and its tool permissions?`)) return;
+        if (!confirm(`Delete MCP registration '${server.name}' and its configuration?`)) return;
         await request(managed ? management(id) : base(id), "DELETE"); clearPending(id);
         if (selected === id) { selected = null; generation += 1; clearTools(); }
         await loadServers(); announce("SUCCESS", "MCP registration deleted.");
@@ -165,7 +170,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
           ui.arguments.value = JSON.stringify(mcpSchemaEditor.example(info.input_schema), null, 2);
           ui["form-notice"].textContent = argumentForm.supported ? "* required. Include optional fields explicitly. Server schema validation is authoritative."
             : "This schema needs Advanced Raw JSON. Review the schema and help before running.";
-          ui["result-summary"].textContent = `Selected ${info.name}. ${info.allowed ? "Review arguments before approval." : "Allow this tool before execution."}`;
+          ui["result-summary"].textContent = `Selected ${info.name}. ${currentServer()?.enabled ? "Review arguments before approval." : "Enable this server before execution."}`;
           ui.result.textContent = ""; ui["result-details"].open = false;
           if (typeof CustomEvent === "function" && document.dispatchEvent) document.dispatchEvent(
             new CustomEvent("local-ai-mcp-tool-selected", { detail: { serverId: selected,
@@ -180,16 +185,8 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       });
       toggle.className = "mcp-tool-toggle"; toggle.setAttribute("aria-expanded", "false"); card.dataset.tool = info.name;
       const detail = make("div"); detail.hidden = true; detail.className = "mcp-tool-details";
-      detail.append(make("p", info.description || "No tool description provided."), make("p", info.allowed ? "Allowed for current schema" : "Blocked (default)"));
+      detail.append(make("p", info.description || "No tool description provided."), make("p", currentServer()?.enabled ? "Enabled 서버의 Tool · 실행 시 기존 승인 정책 적용" : "서버 Disabled · 실행 불가"));
       const schemaDetail = make("details"); schemaDetail.append(make("summary", "Input JSON Schema"), make("pre", JSON.stringify(info.input_schema, null, 2))); detail.append(schemaDetail);
-      button(detail, info.allowed ? "Block tool" : "Allow tool", async () => {
-        const id = selected, version = generation;
-        if (!confirm(`${info.allowed ? "Block" : "Allow"} tool '${info.name}' on '${currentServer().name}'? Each call still requires approval.`)) return;
-        await request(managed ? `${management(id)}/tools/${encodeURIComponent(info.name)}/permission`
-          : `${toolPath(id, info.name)}/permission`, "PUT", { allowed: !info.allowed });
-        if (visible && selected === id && generation === version) await selectServer(id);
-        announce("SUCCESS", "MCP tool permission updated.");
-      });
       card.append(detail);
       ui.tools.append(card);
     }
@@ -217,7 +214,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       registrationSaved = false; ui.name.value = ""; ui.profile.value = "";
       closeRegistration();
     }
-    announce("INFO", "MCP registrations refreshed. Discover Tools again for current permissions/schema.");
+    announce("INFO", "MCP registrations refreshed. Discover Tools again for current server settings/schema.");
   });
   const closeRegistration = () => {
     if (ui.dialog.open) ui.dialog.close();
@@ -303,7 +300,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
   });
   ui.execute.addEventListener("click", () => run(async () => {
     const server = currentServer(), selectedTool = tool, version = generation;
-    if (!visible || !server || state(server) !== "RUNNING" || !selectedTool?.allowed || pending.has(selected)) throw new Error("Discover an allowed tool on a running server; unconfirmed work requires result verification or Stop.");
+    if (!visible || !server || !selectedTool || state(server) !== "RUNNING" || !server.enabled || pending.has(selected)) throw new Error("Enable and discover a tool on a connected server; unconfirmed work requires result verification or Stop.");
     let args;
     args = readToolArguments();
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Arguments must be a JSON object.");
@@ -372,9 +369,9 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
         make("p", "Example only — review before use:"), make("pre", JSON.stringify(mcpSchemaEditor.example(info.input_schema), null, 2)));
     } else ui["help-content"].append(make("p", "1. Add Server: select an approved profile, or submit a new executable/argument list for review in a separate local terminal."),
       make("p", "2. Register stays STOPPED. Start explicitly, then discover Tools. Select a tool name to expand it; select again to collapse."),
-      make("p", "3. Review description/schema and Allow tool. Fill required arguments; enable Include for optional fields. Use Advanced Raw JSON for unsupported schemas."),
+      make("p", "3. Enable the server to expose its discovered tools. Review description/schema and fill required arguments; use Advanced Raw JSON for unsupported schemas. Each call still follows the existing approval policy."),
       make("p", "4. Approve & Run once is a manual administrator diagnostic. Review exact arguments each time. One-use approvals expire after 120 seconds; side effects are not rolled back."),
-      make("p", "5. Timeout/connection loss never triggers automatic retries. Check the pending result or explicitly Stop before reconnecting. Schema refresh clears inputs and permission must match the current schema."));
+      make("p", "5. Timeout/connection loss never triggers automatic retries. Check the pending result or explicitly Stop before reconnecting. Schema refresh clears inputs; Enabled and the current schema are rechecked before execution."));
     ui["help-dialog"].showModal();
   };
   ui.help.addEventListener("click", () => showHelp());

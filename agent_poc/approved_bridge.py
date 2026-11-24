@@ -69,23 +69,21 @@ class DeferredFixtureRun:
         if not self._started or not self._pending or self._busy:
             raise ApprovalError('resume_not_available')
         proposals = self.proposals
-        denied = any(p['state'] == 'DENIED' for p in proposals)
-        if not denied:
-            state = self.core.status(self.run_id)
-            if state['state'] in {'FAILED', 'CANCELLED', 'UNCERTAIN', 'COMPLETED'}:
-                raise ApprovalError(state['error'] or 'run_closed')
-            if any(p['state'] != 'APPROVED' for p in proposals):
-                raise ApprovalError('approval_required')
+        state = self.core.status(self.run_id)
+        if state['state'] in {'FAILED', 'CANCELLED', 'UNCERTAIN', 'COMPLETED'}:
+            raise ApprovalError(state['error'] or 'run_closed')
+        if any(p['state'] not in {'APPROVED','DENIED'} for p in proposals):
+            raise ApprovalError('approval_required')
         decisions = DeferredToolResults(approvals={p['tool_call_id']:
-            ToolDenied('User denied; lookup did not execute') if denied else True for p in proposals})
-        return await self._advance(decisions=decisions, discard=denied)
+            ToolDenied('User denied; lookup did not execute') if p['state']=='DENIED' else True for p in proposals})
+        return await self._advance(decisions=decisions)
 
-    async def _advance(self, *, prompt=None, decisions=None, discard=False):
+    async def _advance(self, *, prompt=None, decisions=None):
         if self._busy: raise ApprovalError('run_busy')
         self._busy = True
         try:
             status = self.core.status(self.run_id)
-            if not discard and status['state'] in {'FAILED', 'CANCELLED', 'UNCERTAIN', 'COMPLETED'}:
+            if status['state'] in {'FAILED', 'CANCELLED', 'UNCERTAIN', 'COMPLETED'}:
                 raise ApprovalError(status['error'] or 'run_closed')
             timeout = max(.000001, status['deadline'] - self.core.clock())
             kwargs = {'usage_limits': self._limits, 'timeout': timeout}
@@ -94,11 +92,6 @@ class DeferredFixtureRun:
             else:
                 result = await self.agent.run(conversation=self._conversation,
                                                deferred_tool_results=decisions, **kwargs)
-            if discard:
-                # A denial can still cause a model to invent a lookup answer.
-                # Never expose that output or mint any follow-up proposals.
-                self.answer, self._pending = None, []
-                return self.core.status(self.run_id)
             if self.core.status(self.run_id)['state'] in {'FAILED', 'CANCELLED', 'UNCERTAIN'}:
                 raise ApprovalError('late_result_discarded')
             if isinstance(result.output, DeferredToolRequests):

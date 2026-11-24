@@ -1,94 +1,55 @@
-/* ApprovalPolicy controls inside the existing MCP Manager. No Tool execution. */
-document.addEventListener("DOMContentLoaded", () => {
-  const panel = document.getElementById("agent-policy");
-  if (!panel) return;
-  const get = (name) => document.getElementById(`agent-policy-${name}`);
-  const mode = get("mode"), enabled = get("auto"), tools = get("tools");
-  const resource = get("resource"), readOnly = get("readonly"), trusts = get("trusts");
-  const status = get("status"), info = get("info");
-  let server = null, data = null, selectedTool = null, argumentsReader = null;
-  let generation = 0, busy = false;
-
-  async function request(path, method = "GET", body) {
-    const response = await fetch(path, { method, credentials: "same-origin", cache: "no-store",
-      headers: { "X-Local-AI-Control": "web-console", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    let packet;
-    try { packet = await response.json(); } catch (_) { throw new Error(`HTTP ${response.status} · invalid response`); }
-    if (!response.ok) throw new Error(packet.error?.code || `HTTP ${response.status}`);
-    return packet;
+/* Session permission only. No server/tool trust registration or Tool execution. */
+document.addEventListener('DOMContentLoaded', () => {
+  const get = id => document.getElementById(id);
+  const session = get('session-id'), mode = get('agent-policy-mode');
+  if (!session || !mode) return;
+  const save = get('agent-policy-save'), refreshButton = get('agent-policy-refresh');
+  const status = get('agent-policy-status');
+  let generation = 0, busy = false, loadedSession = null;
+  const valid = data => data && ['MANUAL','ALLOW_ALL'].includes(data.mode);
+  function update() {
+    mode.disabled = save.disabled = busy || !session.value || loadedSession !== session.value;
+    refreshButton.disabled = !session.value;
   }
-
-  function option(value, label = value) {
-    const item = document.createElement("option"); item.value = value; item.textContent = label; return item;
+  async function request(id, method = 'GET', selected) {
+    const response = await fetch(`/sessions/${encodeURIComponent(id)}/permission`, {
+      method, credentials:'same-origin', cache:'no-store',
+      headers:{'X-Local-AI-Control':'web-console', ...(method === 'PUT' ? {'Content-Type':'application/json'} : {})},
+      ...(method === 'PUT' ? {body:JSON.stringify({mode:selected})} : {}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.code || `HTTP ${response.status}`);
+    if (!valid(data) || data.session_id !== id) throw new Error('invalid_session_permission_response');
+    return data;
   }
-
-  function showSummary(result) {
-    const root = result.server.options?.root || "None (execution configuration is read-only here)";
-    status.textContent = `Server: ${result.server.name} · ${result.server.status?.state || "UNKNOWN"} · Root: ${root}`;
-    info.textContent = JSON.stringify({ approval_mode: result.server.approval_mode,
-      automatic_enabled: result.server.auto_enabled, trusts: result.server.trusts,
-      limitation: result.limitation }, null, 2);
-  }
-
   async function refresh() {
-    const id = server, version = ++generation;
-    const result = await request(`/tool-chat/policy/${encodeURIComponent(id)}`);
-    if (id !== server || version !== generation) return;
-    data = result; mode.value = result.server.approval_mode; enabled.checked = result.server.auto_enabled;
-    tools.replaceChildren();
-    result.tools.forEach((tool) => tools.append(option(tool.name)));
-    if (selectedTool && result.tools.some((tool) => tool.name === selectedTool)) tools.value = selectedTool;
-    trusts.replaceChildren(option("", result.server.trusts.length ? "Select trust" : "No explicit trust"));
-    result.server.trusts.forEach((trust) => trusts.append(option(trust.trust_id,
-      `${trust.tool_name} · ${trust.resource || "server/tool scope"}`)));
-    showSummary(result); panel.hidden = false;
-  }
-
-  document.addEventListener("local-ai-mcp-selected", (event) => {
-    server = event.detail.serverId; selectedTool = null; argumentsReader = null;
-    refresh().catch((error) => { info.textContent = error.message; panel.hidden = false; });
-  });
-  document.addEventListener("local-ai-mcp-tool-selected", (event) => {
-    if (event.detail.serverId !== server) return;
-    selectedTool = event.detail.tool; argumentsReader = event.detail.readArguments;
-    if ([...tools.options].some((item) => item.value === selectedTool)) tools.value = selectedTool;
-  });
-
-  async function act(callback) {
-    if (busy) return;
-    busy = true;
-    const controls = [...panel.querySelectorAll("button, input, select")];
-    controls.forEach((control) => { control.disabled = true; });
-    try { await callback(); await refresh(); }
-    catch (error) { info.textContent = error.message; }
-    finally { controls.forEach((control) => { control.disabled = false; }); busy = false; }
-  }
-
-  get("save").addEventListener("click", () => act(async () => {
-    if (!server || !confirm(`Set ${mode.value} for this server? Automatic approval enabled: ${enabled.checked}`)) return;
-    await request(`/tool-chat/policy/${encodeURIComponent(server)}/mode`, "PUT",
-      { mode: mode.value, enable_auto: enabled.checked });
-  }));
-  get("trust").addEventListener("click", () => act(async () => {
-    const tool = data?.tools.find((item) => item.name === tools.value);
-    if (!tool || !confirm(`Trust the exact current schema and scope for '${tool.name}'?`)) return;
-    const body = { tool: tool.name, catalog_fingerprint: tool.catalog_fingerprint,
-      confirmed: true, verified_read_only: readOnly.checked };
-    if (resource.value.trim()) body.resource = resource.value.trim();
-    await request(`/tool-chat/policy/${encodeURIComponent(server)}/trust`, "POST", body);
-  }));
-  get("revoke").addEventListener("click", () => act(async () => {
-    if (!server || !trusts.value || !confirm("Revoke only the selected trust?")) return;
-    await request(`/tool-chat/policy/${encodeURIComponent(server)}/trust/${encodeURIComponent(trusts.value)}`, "DELETE");
-  }));
-  get("check").addEventListener("click", async () => {
-    if (!server || !tools.value) return;
+    const id = session.value, version = ++generation;
+    loadedSession = null; mode.value = 'MANUAL'; update();
+    if (!id) { status.textContent = '대화를 선택해주세요.'; return; }
     try {
-      const args = argumentsReader && tools.value === selectedTool ? argumentsReader() : {};
-      const result = await request(`/tool-chat/policy/${encodeURIComponent(server)}/decision`, "POST",
-        { tool: tools.value, arguments: args });
-      info.textContent = JSON.stringify(result.decision, null, 2);
-    } catch (error) { info.textContent = error.message; }
+      const data = await request(id);
+      if (version !== generation || session.value !== id) return;
+      mode.value = data.mode; loadedSession = id;
+      status.textContent = `${data.mode === 'MANUAL' ? '호출마다 승인' : '이 Session에서 자동 승인'} · Enabled와 Root 제한은 유지`;
+    } catch (error) {
+      if (version === generation && session.value === id) status.textContent = `Permission 확인 실패 · ${error.message}`;
+    } finally { update(); }
+  }
+  save.addEventListener('click', async () => {
+    if (busy || loadedSession !== session.value || !session.value) return;
+    const id = session.value, selected = mode.value;
+    if (!['MANUAL','ALLOW_ALL'].includes(selected)) return;
+    busy = true; update();
+    try {
+      await request(id, 'PUT', selected);
+    } catch (error) {
+      if (session.value === id) status.textContent = `저장 확인 필요 · ${error.message} · 자동 재시도하지 않습니다.`;
+    } finally {
+      // Read after success or a lost response; never repeat a PUT automatically.
+      busy = false; await refresh();
+    }
   });
+  session.addEventListener('input', refresh);
+  refreshButton.addEventListener('click', refresh);
+  refresh();
 });

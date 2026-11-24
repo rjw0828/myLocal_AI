@@ -31,28 +31,28 @@ class DynamicTests(unittest.TestCase):
         sid=self.manager.add_server('Filesystem',sys.executable,[sys.executable,'--read-only','--confine-roots',str(self.root)],
             root=self.root,confirm=lambda _:True)['server_id']
         self.manager.test_connection(sid,confirm=lambda _:True)
-        self.manager.set_permission(sid,'read_file',True)
+        self.manager.set_enabled(sid,True)
         return sid
 
     def test_catalog_add_stop_block_restart_and_delete(self):
         catalog=ManagedCatalog(self.manager)
         self.assertEqual(len(catalog.discover()),1)
         sid=self.filesystem();entries=catalog.discover()
-        entry=next(e for e in entries if e.server_id==sid)
+        entry=next(e for e in entries if e.server_id==sid and e.original_name=='read_file')
         self.assertEqual(len(entries),2)
         self.assertIn(str(self.root).replace('\\','\\\\'),catalog.model_context(entries))
         catalog.validate(entry,{'path':'test.txt'})
         with self.assertRaises(Exception):catalog.validate(entry,{'path':'../test.txt'})
-        self.manager.set_permission(sid,'read_file',False)
+        self.manager.set_enabled(sid,False)
         self.assertFalse(any(e.server_id==sid for e in catalog.discover()))
         with self.assertRaises(Exception):catalog.validate(entry,{'path':'test.txt'})
-        self.manager.set_permission(sid,'read_file',True)
-        fresh=next(e for e in catalog.discover() if e.server_id==sid)
+        self.manager.set_enabled(sid,True)
+        fresh=next(e for e in catalog.discover() if e.server_id==sid and e.original_name=='read_file')
         self.assertNotEqual(fresh.identity,entry.identity)
         self.manager.stop_server(sid)
         self.assertFalse(any(e.server_id==sid for e in catalog.discover()))
         self.manager.test_connection(sid,confirm=lambda _:True)
-        restarted=next(e for e in catalog.discover() if e.server_id==sid)
+        restarted=next(e for e in catalog.discover() if e.server_id==sid and e.original_name=='read_file')
         self.assertNotEqual(fresh.identity,restarted.identity)
         self.manager.stop_server(sid);self.manager.delete_server(sid)
         self.assertFalse(any(e.server_id==sid for e in catalog.discover()))
@@ -105,7 +105,7 @@ class DynamicTests(unittest.TestCase):
         sid=self.filesystem();self.backend.catalog=ManagedCatalog(self.manager)
         async def model(messages,info):
             name=next(t.name for t in info.function_tools if 'read_file' in t.name)
-            self.manager.set_permission(sid,'read_file',False)
+            self.manager.set_enabled(sid,False)
             return ModelResponse(parts=[ToolCallPart(name,{'path':'test.txt'},tool_call_id='stale')])
         @asynccontextmanager
         async def models(initial):yield FunctionModel(model),{}

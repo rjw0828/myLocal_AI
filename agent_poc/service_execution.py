@@ -38,8 +38,9 @@ class ExecutionError(RuntimeError):
 
 
 class FakeServiceExecutor:
-    def __init__(self, service):
-        if type(service) is not MCPService or type(service._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager):
+    def __init__(self, service, *, allow_disconnected=False):
+        if type(service) is not MCPService or (type(service._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager)
+                and not (allow_disconnected and service._runtime is None)):
             raise TypeError('C-3B-1 requires MCPService already connected to the exact FakeRuntime')
         self.service, self.runtime = service, service._runtime
         self._lock, self._records = RLock(), {}
@@ -112,6 +113,8 @@ class FakeServiceExecutor:
             if len(canonical_json(result).encode('utf-8')) > 65536:
                 raise ExecutionError('tool_result_too_large', oid)
             if result.get('is_error') is not False:
+                if result.get('is_error') is True:
+                    with self._lock:self._records[oid]['result'] = deepcopy(result)
                 raise ExecutionError('tool_returned_error', oid)
             if not isinstance(result.get('content'), list):
                 raise ExecutionError('tool_result_invalid', oid)

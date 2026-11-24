@@ -29,7 +29,8 @@ class SyntheticClient:
         assert self.owner is asyncio.current_task()
         if self.config.args==('--generic',):
             return ListToolsResult(tools=[Tool(name='convert_temperature',description='Generic fixture',input_schema={
-                'type':'object','properties':{'value':{'type':'number'}},'required':['value']})])
+                'type':'object','properties':{'value':{'type':'number'}},'required':['value']}),
+                Tool(name='echo_text',input_schema={'type':'object','properties':{}})])
         return ListToolsResult(tools=[Tool(name='read_file',description='fixture read',input_schema={
             'type':'object','properties':{'path':{'type':'string'}},'required':['path']})])
     async def call_tool(self,name,arguments,**kwargs):
@@ -59,7 +60,7 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.manager.shutdown);self.addCleanup(self.runtime.shutdown)
         self.sid=self.manager.add_server('registered fs',str(self.node),list(self.config.args),confirm=lambda _:True)['server_id']
         self.manager.test_connection(self.sid,confirm=lambda _:True)
-        self.manager.set_permission(self.sid,'read_file',True)
+        self.manager.set_enabled(self.sid,True)
         self.catalog=ManagedCatalog(self.manager)
 
     def test_connection_attests_root_without_granting_trust(self):
@@ -69,12 +70,18 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('absolute_root',self.catalog.model_context([entry]))
         self.catalog.validate(entry,{'path':'test.txt'})
         with self.assertRaises(Exception):self.catalog.validate(entry,{'path':str(self.base/'outside')})
+        for mode in ('MANUAL','ALLOW_ALL'):
+            permission={'mode':mode,'manual_generation':0}
+            self.assertEqual(self.manager.policy.evaluate(entry,{'path':str(self.base/'outside')},permission=permission).action,'BLOCK')
+            self.assertEqual(self.manager.policy.evaluate(entry,{'path':'test.txt'},permission=permission).action,
+                             'ASK' if mode=='MANUAL' else 'AUTO_APPROVE')
         self.assertEqual(SyntheticClient.calls,0)
 
     async def test_registered_owner_single_dispatch_and_duplicate_prevention(self):
-        entry=self.catalog.discover()[0];core=ServiceApprovalCore(self.catalog,FakeServiceExecutor(self.manager.service),policy=self.manager.policy)
+        entry=self.catalog.discover()[0];core=ServiceApprovalCore(self.catalog,FakeServiceExecutor(self.manager.service),policy=self.manager.policy,
+            permission={'mode':'ALLOW_ALL','manual_generation':0})
         core.create_session('fixture');rid=core.start_run('fixture');p=core.issue(rid,'call',entry,{'path':'test.txt'})
-        core.decide(rid,p['proposal_id'],True)
+        self.assertEqual(core.apply_policy(rid,p['proposal_id']).action,'AUTO_APPROVE')
         result=await core.execute(rid,'call',entry,{'path':'test.txt'})
         self.assertEqual(result['content'][0]['text'],'fixture text')
         with self.assertRaises(Exception):await core.execute(rid,'call',entry,{'path':'test.txt'})
@@ -100,26 +107,38 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(proof['allow_relative'])
         self.assertEqual(proof['root'],str(self.root))
 
-    def test_new_generic_server_needs_no_agent_code_or_automatic_trust(self):
+    async def test_new_generic_server_needs_no_agent_code_or_automatic_trust(self):
         sid=self.manager.add_server('new generic',str(self.node),['--generic'],confirm=lambda _:True)['server_id']
         self.manager.test_connection(sid,confirm=lambda _:True)
-        self.manager.set_permission(sid,'convert_temperature',True)
-        entry=next(e for e in self.catalog.discover() if e.server_id==sid)
+        self.manager.set_enabled(sid,True)
+        entries=[e for e in self.catalog.discover() if e.server_id==sid]
+        self.assertEqual({e.original_name for e in entries}, {'convert_temperature','echo_text'})
+        self.manager.service.registry.set_permission(sid,'convert_temperature','old-schema',False)
+        entry=next(e for e in entries if e.original_name=='convert_temperature')
         self.catalog.validate(entry,{'value':25})
         self.assertEqual(self.manager.decision(sid,'convert_temperature',{'value':25})['action'],'ASK')
+        core=ServiceApprovalCore(self.catalog,FakeServiceExecutor(self.manager.service),policy=self.manager.policy)
+        core.create_session('disabled');rid=core.start_run('disabled')
+        proposal=core.issue(rid,'generic-call',entry,{'value':25})
+        core.decide(rid,proposal['proposal_id'],True)
+        # Service API deliberately bypasses policy invalidation: final Enabled
+        # admission itself must reject the previously approved call.
+        self.manager.service.set_enabled(sid,False)
+        with self.assertRaises(Exception):await core.execute(rid,'generic-call',entry,{'value':25})
+        self.assertFalse(any(e.server_id==sid for e in self.catalog.discover()))
+        self.manager.service.set_enabled(sid,True)
+        with self.assertRaises(Exception):self.catalog.validate(entry,{'value':25})
         self.manager.stop_server(sid)
         self.assertFalse(any(e.server_id==sid for e in self.catalog.discover()))
         self.assertEqual(SyntheticClient.calls,0)
 
     def test_restart_requires_fresh_trust_and_root_replacement_is_rejected(self):
-        self.manager.trust(self.sid,'read_file',resource=self.root,verified_read_only=True,confirm=lambda _:True)
-        self.manager.set_mode('AUTO_ALLOW_SAFE',server_id=self.sid,enable_auto=True)
-        self.assertEqual(self.manager.decision(self.sid,'read_file',{'path':'test.txt'})['action'],'AUTO_APPROVE')
+        permission={'mode':'ALLOW_ALL','manual_generation':0}
         before=self.catalog.discover()[0]
         self.manager.stop_server(self.sid);self.manager.test_connection(self.sid,confirm=lambda _:True)
         after=self.catalog.discover()[0]
         self.assertNotEqual(before.identity,after.identity)
-        self.assertEqual(self.manager.decision(self.sid,'read_file',{'path':'test.txt'})['action'],'ASK')
+        self.assertEqual(self.manager.policy.evaluate(after,{'path':'test.txt'},permission=permission).action,'AUTO_APPROVE')
         self.root.rename(self.base/'old-root');self.root.mkdir()
         with self.assertRaises(Exception):self.catalog.model_context([after])
         self.assertEqual(SyntheticClient.calls,0)

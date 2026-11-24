@@ -1,12 +1,16 @@
 # Pydantic AI 통합 Known Issues
 
-2026-11-24 기준. Pydantic AI를 최신 Agent 엔진으로 채택한다. 아래 제한은 사용자가 수용한 개인 개발 환경의 Known Issues이며, 모든 사전 실측 완료를 로컬 Merge 조건으로 요구하지 않는다. 일반 Console의 Agent 기능은 기본 비활성이고 별도 호스트에서 선택 활성화한다.
+2026-11-24 기준. Pydantic AI를 최신 Agent 엔진으로 채택한다. 아래 제한은 사용자가 수용한 개인 개발 환경의 Known Issues이며, 모든 사전 실측 완료를 로컬 Merge 조건으로 요구하지 않는다. 일반 Console의 Agent 기능은 기본 비활성이고 `start_app.bat --agent`로 선택 활성화한다. 기존 격리 검증 호스트도 유지한다.
+
+## Agent Console UX-1 검증 범위
+
+공통 모델 선택·저장/복원·Job 모델 고정·선택 모델 삭제·선택 활성화·시작 실패의 일반 Chat 유지·민감 정보 없는 오류 진단은 Fake/Flask 및 JavaScript doubles로 검증한다. 이번 작업에서는 실제 Ollama 추론, MCP 프로세스, 브라우저 실측을 수행하지 않는다. 설치된 모든 모델의 Tool Calling 지원/품질을 보장하지 않으며 기존 `agent_run_failed`와 Qwen 선택 불안정은 미해결이다. 실제 사용 시 Agent 의존성을 갖춘 Python 지정, 화면 활성 상태, 모델 재선택/재시작 복원 및 실제 승인 이후 결과를 확인해야 한다.
 
 ## 최근 확인된 문제
 
 - C-5G Filesystem Allow 이후 `agent_run_failed`: 승인 POST는 HTTP 202였지만 실제 Operation 생성 전 실패했다. 실제 SDK Tool Call 0회, History 저장 없음, Session 예약 해제. 원인은 미확정이다. 동일 Schema와 revision의 FunctionModel/Fake 및 Mock HTTP Ollama Provider 재생은 통과했으나 실제 호스트 실패를 재현하지 못했다. 해결된 것으로 취급하지 않는다.
 - Qwen의 짧은 자연어 질문 Tool 선택은 불안정하다. Gemma와 모델별 Prompt 분기를 추가하지 않았다.
-- 정상 복합 Tool 실행은 기존 응답당 1회 제한으로 미지원이다. 일부 근거만으로 전체 성공을 저장하는 것은 차단한다. 근거 검사 Fixture의 정상 복합 근거 일치는 실제 복합 실행 지원을 의미하지 않는다.
+- STEP C에서 응답당 1회 제한을 제거하고 복수 Tool·여러 라운드 및 부분 실패를 Fake/Flask로 검증했다. 실제 모델·MCP의 복합 요청은 미실측이며 성공으로 표시하지 않는다. 일부 Tool만 호출하고 전체 조회에 성공했다고 답하는 경우의 기존 근거 검사는 유지한다.
 - 일부 브라우저 후속 Run, Stop, 승인 모드 및 신뢰 설정의 전체 UI 경로는 미검증이다. C-5G의 추가 실측은 사용자 결정으로 종료했다.
 - 요일, 파일 내용의 일반 의미 일치, 해석 불가능한 시간 표현, 복수 시간대 및 혼합 답변의 개별 주장 정렬은 검증 범위 밖이다. `not_checked` 또는 `not_verified`는 진위 검증 성공이 아니다. 조회 요구 판별도 기존의 제한된 규칙이며 자연어 전체를 보장하지 않는다.
 - Voice Python 의존성 누락은 별도 환경 문제다. 안전 회귀에서 제외한 STT/TTS 모듈을 PASS나 Skip 처리한 것으로 간주하지 않는다. 실제 장치 검증은 이 통합 범위 밖이다.

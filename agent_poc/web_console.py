@@ -18,12 +18,21 @@ MODELS={'local-ai-c4b-gemma4-8k':'gemma4:12b','local-ai-c4b-qwen35-8k':'qwen3.5:
 
 
 @asynccontextmanager
-async def local_model(initial,*,name,diagnostic_path=None):
+async def local_model(initial,*,name,diagnostic_path=None,installed_only=False):
     import httpx2
     from openai import AsyncOpenAI
     from pydantic_ai.models.ollama import OllamaModel
     from pydantic_ai.providers.ollama import OllamaProvider
-    if name not in MODELS:raise ValueError('Reviewed installed model profile required')
+    if installed_only:
+        import asyncio
+        import ai_controller
+        from .web_contract import ToolChatError
+        try:
+            if name not in await asyncio.to_thread(ai_controller.list_models):
+                raise ValueError('not installed')
+        except (OSError, ValueError):
+            raise ToolChatError('agent_model_unavailable') from None
+    elif name not in MODELS:raise ValueError('Reviewed installed model profile required')
     async def check(request):
         if str(request.url)!='http://127.0.0.1:11434/v1/chat/completions':
             raise PermissionError('Only local Ollama inference is allowed')
@@ -40,7 +49,7 @@ async def local_model(initial,*,name,diagnostic_path=None):
     async with httpx2.AsyncClient(trust_env=False,timeout=120,event_hooks={'request':[check],'response':[record_response]}) as http:
         client=AsyncOpenAI(base_url='http://127.0.0.1:11434/v1',api_key='local-only',max_retries=0,http_client=http)
         provider=OllamaProvider(openai_client=client)
-        source=OllamaModel(MODELS[name],provider=provider)
+        source=OllamaModel(name if installed_only else MODELS[name],provider=provider)
         profile=dict(source.profile);profile['json_schema_transformer']=None
         model=OllamaModel(name,provider=provider,profile=profile)
         yield model,{'temperature':.2,'top_p':.9,'seed':1,'max_tokens':512,

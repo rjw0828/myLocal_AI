@@ -7,6 +7,7 @@ Multiple controller processes sharing a database are not supported.
 from contextlib import closing, contextmanager
 from pathlib import Path
 import sqlite3
+from threading import RLock
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "local_ai_lab.sqlite3"
 NEW_TITLE = "새 대화"
@@ -48,6 +49,9 @@ class SQLiteStore:
         self.limit = limit
         self.timeout = timeout
         self.initialized = False
+        # Shared with final Tool admission; permission updates never acquire a
+        # Job/core lock while holding this gate.
+        self.permission_lock = RLock()
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -60,14 +64,29 @@ class SQLiteStore:
                     raise StorageError("Unsupported session storage schema.")
                 schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
                 db.executescript("BEGIN IMMEDIATE;\n" + schema + "\nCOMMIT;")
-            elif version != 1:
+            elif version not in (1, 2):
                 raise StorageError("Unsupported session storage schema version.")
+            if version == 1:
+                db.execute('SELECT number,session_id,title,titled,explicit,system_prompt,last_response_language,revision,created_at,updated_at FROM sessions LIMIT 0')
+                db.execute('SELECT session_id,ordinal,role,content,language FROM messages LIMIT 0')
+                db.execute('SELECT session_id,deleted_at FROM deleted_sessions LIMIT 0')
+                db.execute('BEGIN IMMEDIATE')
+                try:
+                    if db.execute('PRAGMA user_version').fetchone()[0] == 1:
+                        db.execute("ALTER TABLE sessions ADD COLUMN permission TEXT NOT NULL DEFAULT 'MANUAL' CHECK(permission IN ('MANUAL','ALLOW_ALL'))")
+                        db.execute('ALTER TABLE sessions ADD COLUMN manual_generation INTEGER NOT NULL DEFAULT 0')
+                        db.execute('PRAGMA user_version = 2')
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise StorageError("Session storage integrity check failed.")
             db.execute("SELECT number,session_id,title,titled,explicit,system_prompt,"
                        "last_response_language,revision,created_at,updated_at FROM sessions LIMIT 0")
             db.execute("SELECT session_id,ordinal,role,content,language,created_at FROM messages LIMIT 0")
             db.execute("SELECT session_id,deleted_at FROM deleted_sessions LIMIT 0")
+            db.execute('SELECT permission,manual_generation FROM sessions LIMIT 0')
             if db.execute("PRAGMA foreign_key_check").fetchone():
                 raise StorageError("Session storage integrity check failed.")
             db.execute("PRAGMA journal_mode=WAL")
@@ -135,6 +154,24 @@ class SQLiteStore:
             self.check_deleted(db, session_id)
             row = db.execute("SELECT revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()
             return row[0] if row else None
+
+    def permission(self, session_id):
+        with self.permission_lock, self.connection() as db:
+            self.check_deleted(db, session_id)
+            row = db.execute('SELECT permission AS mode,manual_generation FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            return dict(row) if row else None
+
+    def set_permission(self, session_id, mode):
+        if mode not in ('MANUAL','ALLOW_ALL'):
+            raise ValueError('Invalid session permission')
+        with self.permission_lock, self.connection(write=True) as db:
+            self.check_deleted(db, session_id)
+            row = db.execute('SELECT permission FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE sessions SET permission=?,manual_generation=manual_generation+CASE WHEN ?='MANUAL' AND permission<>'MANUAL' THEN 1 ELSE 0 END WHERE session_id=?",
+                       (mode, mode, session_id))
+            return dict(db.execute('SELECT permission AS mode,manual_generation FROM sessions WHERE session_id=?', (session_id,)).fetchone())
 
     def create(self, session_id, *, explicit=False):
         with self.connection(write=True) as db:

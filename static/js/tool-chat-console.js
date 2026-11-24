@@ -91,8 +91,13 @@
       const note = r.blocked ? " · Session reserved" : "";
       const names = { RUNNING: "Running", WAITING_APPROVAL: "Waiting for approval", COMPLETED: "Completed",
         FAILED: "Failed", CANCELLED: "Cancelled", UNCERTAIN: "UNCERTAIN · Server completion must be verified" };
+      const phases = { QUEUED: '요청 준비 중', MODEL_SETUP: '모델 준비 중', CATALOG: '사용 가능한 Tool 확인 중',
+        MODEL_RESPONSE: '모델 응답 생성 중', TOOL_PREPARING: '승인 반영·Tool 준비 중',
+        TOOL_EXECUTING: 'Tool 실행 중', FINAL_RESPONSE: 'Tool 결과로 답변 생성 중' };
       const code = ["tool_evidence_missing", "tool_time_mismatch"].includes(r.errorCode) ? this.errorText({ code: r.errorCode }) : r.errorCode;
-      return `${names[r.state] || r.localState || "Unknown"}${r.restored && r.blocked ? " · Restored job; approval not restored. Cancel or check status" : ""}${r.cancelIntent ? " · Cancel requested" : ""}${note}${code ? ` · ${code}` : ""}${r.verificationRequired ? " · Check status required" : ""}`;
+      const stage = r.state === 'RUNNING' ? phases[r.phase] : null;
+      const failure = r.errorCode === 'agent_run_failed' ? ` · Agent 처리 실패. Job ${r.jobId}의 내부 로그를 확인해주세요. 자동 재실행하지 않습니다.` : '';
+      return `${stage || names[r.state] || r.localState || "Unknown"}${r.model ? ` · ${r.model}` : ''}${r.restored && r.blocked ? " · Restored job; approval not restored. Cancel or check status" : ""}${r.cancelIntent ? " · Cancel requested" : ""}${note}${code ? ` · ${code}` : ""}${failure}${r.verificationRequired ? " · Check status required" : ""}`;
     }
     render() {
       const r = this.current(), n = this.nodes;
@@ -131,7 +136,10 @@
         this.lastErrors.set(event.sessionId, { jobId: event.jobId, error: event.error });
         this.log("ERROR", this.errorText(event.error));
       } else if (name === "completed") {
-        this.log("SUCCESS", "Completed · final answer received.");
+        const partial = Array.isArray(event.result.tool_calls) && event.result.tool_calls.some(c => c && ['FAILED','DENIED'].includes(c.status));
+        this.log(partial ? "INFO" : "SUCCESS", partial
+          ? "Completed · 대화 완료 · 실패/거부된 Tool이 있습니다. 호출별 결과를 확인해주세요."
+          : "Completed · final answer received.");
         if (this.matches(event)) {
           this.answer(event.sessionId, event.result, this.languages.get(event.sessionId));
           this.tracker.acknowledgeResult(event.sessionId, event.jobId);
@@ -156,6 +164,9 @@
         session_reserved: "Another request owns this session. Wait and check status.",
         session_unsettled: "Server completion is unresolved. This session remains blocked.",
         stale_approval: "Approval changed. Check status and review the new proposal.",
+        agent_model_unavailable: "선택한 Agent 모델을 확인할 수 없습니다. Ollama와 설치 목록을 확인해주세요. 자동 재실행하지 않습니다.",
+        session_permission_requires_manual: "Permission이 Manual로 변경되어 미전송 자동 승인 호출을 차단했습니다. 새 요청에서 승인해주세요. 자동 재실행하지 않습니다.",
+        tool_catalog_empty: "사용 가능한 MCP Tool이 없습니다. MCP Manager에서 Start/Discovery와 Tool Allow를 확인해주세요.",
         operation_unresolved: "MCP completion is not confirmed. No replay or automatic recovery.",
         job_timeout: "Job timed out. Check whether its reservation is still owned.",
         tool_evidence_missing: "No successful result for the requested lookup. The answer was not saved. No automatic retry was performed.",
@@ -225,8 +236,8 @@
       n.path.textContent = typeof p.arguments.path === "string" ? p.arguments.path : "See requested arguments above.";
       n.scope.textContent = p.scope ? JSON.stringify(p.scope, null, 2) : "No filesystem scope.";
       n.notice.textContent = p.scope
-        ? `ROOT-WIDE approval: ${p.scope.path} · includes subdirectories: ${p.scope.recursive ? "YES" : "NO"}. Even a single-file request grants this entire displayed root for this AI response only.`
-        : "Approval applies only to this AI response, never to the next question.";
+        ? `이번 Tool 호출과 표시된 인수만 승인합니다. Root boundary: ${p.scope.path} · includes subdirectories: ${p.scope.recursive ? "YES" : "NO"}. Root는 접근 제한 범위이며 다른 호출을 승인하지 않습니다.`
+        : "이번 Tool 호출과 표시된 인수만 승인합니다. 같은 답변 안의 다음 호출도 별도 승인이 필요합니다.";
       n.allow.disabled = false; n.deny.disabled = false;
       if (!n.dialog.open) n.dialog.showModal();
       this.log("INFO", "Approval required · Review server, tool, arguments and scope in the dialog.");

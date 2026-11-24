@@ -3,7 +3,7 @@
 SQLite transactions serialize policy edits and final operation admission. No
 server discovery, process launch, Agent loop, approval token or tool execution.
 """
-from contextlib import contextmanager, closing
+from contextlib import contextmanager, closing, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -20,12 +20,14 @@ from mcp_manager.registry import canonical_json, fingerprint
 from .readiness_gate import ReadOnlyScope, no_reparse, local_path
 
 
-class PolicyError(PermissionError): pass
+class PolicyError(PermissionError):
+    @property
+    def code(self):
+        return 'session_permission_requires_manual' if self.args == ('session_permission_requires_manual',) else 'approval_policy_rejected'
 
 
 class ApprovalMode(str, Enum):
-    ASK_EVERY_TIME='ASK_EVERY_TIME'
-    AUTO_ALLOW_SAFE='AUTO_ALLOW_SAFE'
+    MANUAL='MANUAL'
     ALLOW_ALL='ALLOW_ALL'
 
 
@@ -68,7 +70,7 @@ class ApprovalPolicy:
             db.execute('CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, event TEXT NOT NULL, payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS admissions (proposal_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE)')
             db.execute('INSERT OR IGNORE INTO policy VALUES(1,?,0,?)',(uuid4().hex,canonical_json({
-                'project_mode':ApprovalMode.AUTO_ALLOW_SAFE.value,'auto_enabled':False,'overrides':{},'trusts':{}})))
+                'project_mode':ApprovalMode.MANUAL.value,'auto_enabled':False,'overrides':{},'trusts':{}})))
             db.commit()
 
     @contextmanager
@@ -115,15 +117,7 @@ class ApprovalPolicy:
             self._audit(db,event,{'previous_revision':revision,**data})
 
     def set_mode(self,mode,*,server_id=None,enable_auto=False):
-        mode=ApprovalMode(mode)
-        if type(enable_auto) is not bool:raise PolicyError('Explicit automatic enable flag required')
-        def change(state):
-            if server_id is None:state['project_mode']=mode.value
-            else:
-                if not isinstance(server_id,str) or not server_id:raise PolicyError('Invalid server ID')
-                state['overrides'][server_id]=mode.value
-            if enable_auto:state['auto_enabled']=True
-        self._edit(change,'mode_changed',{'server_id':server_id,'mode':mode.value,'explicit_enable':enable_auto})
+        raise PolicyError('Permission belongs to the Conversation Session')
 
     def disable_auto(self):
         self._edit(lambda s:s.update(auto_enabled=False),'automatic_disabled',{})
@@ -200,8 +194,19 @@ class ApprovalPolicy:
         elif 'path' in args:raise PolicyError('Filesystem-like arguments need a verified Root contract')
         return scope
 
-    def _evaluate(self,state,revision,entry,args):
-        mode=ApprovalMode(state['overrides'].get(entry.server_id,state['project_mode']))
+    @staticmethod
+    def effective_permission(snapshot=None, reader=None):
+        snapshot = snapshot or {'mode':'MANUAL','manual_generation':0}
+        mode = ApprovalMode(snapshot['mode'])
+        if reader is not None:
+            current = reader()
+            if current is None: raise PolicyError('session_not_found')
+            if current['manual_generation'] > snapshot['manual_generation']:
+                mode = ApprovalMode.MANUAL
+        return mode
+
+    def _evaluate(self,state,revision,entry,args,permission=None,permission_reader=None):
+        mode=self.effective_permission(permission,permission_reader)
         def decision(action,reason):return PolicyDecision(action,reason,mode.value,revision)
         bindings=state.get('contract_bindings',{})
         if entry.server_id in bindings and bindings[entry.server_id]!=contract_identity(self._contracts.get(entry.server_id)):
@@ -219,41 +224,20 @@ class ApprovalPolicy:
             if not entry.descriptor['allowed']:return decision('BLOCK','tool_blocked')
             scope=self._scope(entry,args)
         except Exception:return decision('BLOCK','execution_scope_invalid')
-        if mode is ApprovalMode.ASK_EVERY_TIME:return decision('ASK','ask_every_time')
-        if not state['auto_enabled']:return decision('ASK','automatic_not_explicitly_enabled')
-        matches=[r for r in state['trusts'].values()
-                 if r['server_id']==entry.server_id and r['tool_name']==entry.original_name]
-        if not matches:return decision('ASK','no_explicit_trust')
-        for record in matches:
-            if (record['catalog_fingerprint']!=entry.identity or record['source']!=entry.descriptor['source']
-                    or record['schema_fingerprint']!=fingerprint(entry.descriptor['input_schema'])
-                    or record['contract']!=contract_identity(scope)):
-                continue
-            if record['expires_at'] is not None and self.clock()>=record['expires_at']:continue
-            if scope is not None and scope.kind=='filesystem':
-                candidate=Path(args['path'])
-                if not candidate.is_absolute():candidate=scope.root/candidate
-                candidate=candidate.resolve(strict=True)
-                trusted=Path(record['resource']);no_reparse(trusted)
-                if (candidate!=trusted if record['resource_kind']=='file' else not candidate.is_relative_to(trusted)):
-                    continue
-            if mode is ApprovalMode.AUTO_ALLOW_SAFE and (not record['verified_read_only'] or scope is None):
-                continue
-            return decision('AUTO_APPROVE','trusted_safe_scope' if mode is ApprovalMode.AUTO_ALLOW_SAFE else 'explicit_allow_all_scope')
-        return decision('ASK','trust_stale_expired_or_outside_scope')
+        return decision('AUTO_APPROVE','session_allow_all') if mode is ApprovalMode.ALLOW_ALL else decision('ASK','session_manual')
 
-    def evaluate(self,entry,args):
-        with self._transaction() as (_,state,revision):return self._evaluate(state,revision,entry,args)
+    def evaluate(self,entry,args,*,permission=None,permission_reader=None,permission_guard=None):
+        with (permission_guard or nullcontext()), self._transaction() as (_,state,revision):
+            return self._evaluate(state,revision,entry,args,permission,permission_reader)
 
-    def consume(self,proposal,entry,args,operation_id,consume):
+    def consume(self,proposal,entry,args,operation_id,consume,*,permission=None,permission_reader=None,permission_guard=None):
         # Called at the existing final Core/service admission point. Configuration
         # updates in another instance cannot interleave this transaction.
-        with self._transaction() as (db,state,revision):
-            if proposal.get('policy_revision')!=revision:raise PolicyError('approval_policy_changed')
-            decision=self._evaluate(state,revision,entry,args)
+        with (permission_guard or nullcontext()), self._transaction() as (db,state,revision):
+            decision=self._evaluate(state,revision,entry,args,permission,permission_reader)
             if decision.action=='BLOCK':raise PolicyError(decision.reason)
             if proposal.get('approval_method')=='AUTO' and decision.action!='AUTO_APPROVE':
-                raise PolicyError('automatic_trust_no_longer_valid')
+                raise PolicyError('session_permission_requires_manual')
             if proposal.get('approval_method') not in ('AUTO','MANUAL'):raise PolicyError('approval_method_missing')
             try:db.execute('INSERT INTO admissions VALUES(?,?)',(proposal['proposal_id'],operation_id))
             except sqlite3.IntegrityError:raise PolicyError('policy_duplicate_admission') from None

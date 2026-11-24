@@ -16,7 +16,7 @@ class ManagedCatalog(MCPCatalog):
             if self.exposed is not None and (entry.server_id,entry.original_name) not in self.exposed:continue
             if self.manager.filesystem_like(entry):
                 scope=self.manager.verified_scope(entry)
-                if scope is None or scope.kind!='filesystem' or entry.original_name not in scope.tools:continue
+                if scope is None or scope.kind!='filesystem':continue
             result.append(entry)
         return tuple(result)
 

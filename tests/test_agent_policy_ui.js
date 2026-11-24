@@ -1,45 +1,67 @@
 "use strict";
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-const root = path.resolve(__dirname, "..");
-const nodes = {};
-for (const name of ["mode", "auto", "tools", "save", "trust", "revoke", "check", "info", "status", "resource", "readonly", "trusts"]) {
-  nodes[`agent-policy-${name}`] = { textContent: "", value: "", checked: false, handlers: {}, options: [],
-    addEventListener(event, callback) { this.handlers[event] = callback; },
-    replaceChildren(...items) { this.options = items; }, append(item) { this.options.push(item); } };
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const source = fs.readFileSync(path.join(__dirname,'../static/js/agent-policy.js'),'utf8');
+const flush = () => new Promise(setImmediate);
+const deferred = () => { let resolve; const promise = new Promise(r => resolve=r); return {promise,resolve}; };
+const packet = (session_id,mode='MANUAL') => ({ok:true,json:async()=>({session_id,mode,manual_generation:0})});
+function fixture(initial='A') {
+  const nodes={};
+  for (const id of ['session-id','agent-policy-mode','agent-policy-save','agent-policy-refresh','agent-policy-status'])
+    nodes[id]={value:'',disabled:false,textContent:'',handlers:{},addEventListener(e,f){this.handlers[e]=f;}};
+  nodes['session-id'].value=initial;
+  const records={A:'MANUAL',B:'ALLOW_ALL'}, calls=[];
+  let override=null;
+  vm.runInNewContext(source, {document:{getElementById:id=>nodes[id],addEventListener(e,f){if(e==='DOMContentLoaded')f();}},
+    fetch:async(url,options)=>{
+      calls.push({url,...options}); if(override)return override(url,options);
+      const id=decodeURIComponent(url.split('/')[2]);
+      if(options.method==='PUT')records[id]=JSON.parse(options.body).mode;
+      return packet(id,records[id]);
+    }});
+  return {nodes,calls,records,mode:nodes['agent-policy-mode'],save:nodes['agent-policy-save'],
+    handle:f=>{override=f;}, async select(id){nodes['session-id'].value=id;await nodes['session-id'].handlers.input();},
+    refresh:()=>nodes['agent-policy-refresh'].handlers.click()};
 }
-nodes["agent-policy"] = { hidden: true,
-  querySelectorAll() { return Object.values(nodes).filter((item) => item.handlers); } };
-const events = {}, calls = [];
-let finishSave;
-const response = () => ({ ok: true, json: async () => ({ server: { name: "Time", approval_mode: "AUTO_ALLOW_SAFE",
-  auto_enabled: true, status: { state: "RUNNING" }, options: { root: null }, trusts: [] },
-  tools: [{ name: "get_current_time", catalog_fingerprint: "current" }], limitation: "reviewed profile only" }) });
-const document = { getElementById(id) { return nodes[id]; },
-  createElement() { return { value: "", textContent: "" }; },
-  addEventListener(name, callback) { if (name === "DOMContentLoaded") callback(); else events[name] = callback; } };
-vm.runInNewContext(fs.readFileSync(path.join(root, "static/js/agent-policy.js"), "utf8"), { document,
-  confirm: () => true, fetch: async (url, options) => { calls.push({ url, method: options.method, body: options.body });
-    if (options.method === "PUT") return new Promise((resolve) => { finishSave = () => resolve(response()); });
-    return response(); } });
-const html = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
-const start = html.indexOf('<section id="agent-policy"');
-const section = html.slice(start, html.indexOf("</section>", start));
-assert.ok(section.includes("ASK_EVERY_TIME"));
-assert.ok(section.includes("agent-policy-resource"));
-assert.ok(section.includes("agent-policy-trusts"));
-(async () => {
-  events["local-ai-mcp-selected"]({ detail: { serverId: "time" } });
-  await new Promise(setImmediate);
-  assert.match(nodes["agent-policy-status"].textContent, /Time/);
-  nodes["agent-policy-mode"].value = "AUTO_ALLOW_SAFE"; nodes["agent-policy-auto"].checked = true;
-  const saving = nodes["agent-policy-save"].handlers.click();
-  assert.equal(nodes["agent-policy-mode"].disabled, true);
-  await nodes["agent-policy-save"].handlers.click();
-  assert.equal(calls.filter((call) => call.method === "PUT").length, 1);
-  finishSave(); await saving;
-  assert.equal(nodes["agent-policy-mode"].disabled, false);
-  console.log("12/12 policy UI checks passed (scope controls + in-flight settings lock)");
-})().catch((error) => { console.error(error); process.exitCode = 1; });
+const tests=[],test=(name,run)=>tests.push({name,run});
+test('no session cannot save or request permissions',async()=>{
+  const f=fixture('');await flush();assert.equal(f.calls.length,0);assert.equal(f.save.disabled,true);
+});
+test('session switch restores independent saved permission',async()=>{
+  const f=fixture();await flush();assert.equal(f.mode.value,'MANUAL');
+  await f.select('B');assert.equal(f.mode.value,'ALLOW_ALL');
+  await f.select('A');assert.equal(f.mode.value,'MANUAL');
+  assert.ok(f.calls.every(c=>c.headers['X-Local-AI-Control']==='web-console' && c.cache==='no-store'));
+});
+test('save writes only selected session and reads back without tool calls',async()=>{
+  const f=fixture();await flush();f.mode.value='ALLOW_ALL';await f.save.handlers.click();
+  assert.equal(f.records.A,'ALLOW_ALL');assert.equal(f.records.B,'ALLOW_ALL');
+  assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  assert.ok(f.calls.every(c=>c.url.startsWith('/sessions/')));
+});
+test('duplicate saves and late old-session receipts cannot overwrite new session',async()=>{
+  const f=fixture();await flush();const pending=deferred();
+  f.handle((url,options)=>options.method==='PUT'?pending.promise:packet(url.split('/')[2],url.includes('/B/')?'MANUAL':'ALLOW_ALL'));
+  f.mode.value='ALLOW_ALL';const saving=f.save.handlers.click();await f.save.handlers.click();
+  assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  await f.select('B');pending.resolve(packet('A','ALLOW_ALL'));await saving;
+  assert.equal(f.mode.value,'MANUAL');assert.equal(f.save.disabled,false);
+});
+test('A-B-A rejects stale refresh using generation, not just session id',async()=>{
+  const f=fixture();await flush();const old=deferred();let reads=0;
+  f.handle(url=>{const id=url.split('/')[2];return id==='A' && reads++===0?old.promise:packet(id,'MANUAL');});
+  const stale=f.refresh();await f.select('B');await f.select('A');old.resolve(packet('A','ALLOW_ALL'));await stale;
+  assert.equal(f.mode.value,'MANUAL');
+});
+test('lost save response reconciles with GET and malformed reads fail closed',async()=>{
+  const f=fixture();await flush();f.handle((url,options)=>{
+    if(options.method==='PUT')throw Error('lost response');return packet('A','ALLOW_ALL');
+  });
+  f.mode.value='ALLOW_ALL';await f.save.handlers.click();
+  assert.equal(f.mode.value,'ALLOW_ALL');assert.equal(f.calls.filter(c=>c.method==='PUT').length,1);
+  f.handle(()=>packet('A','AUTO_ALLOW_SAFE'));await f.refresh();assert.equal(f.save.disabled,true);
+});
+(async()=>{let failures=0;for(const {name,run} of tests){try{await run();}catch(e){failures++;console.error(name,e);}}
+  console.log(`${tests.length-failures}/${tests.length} Session Permission UI checks passed`);process.exitCode=failures?1:0;})();

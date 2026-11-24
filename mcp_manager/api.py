@@ -126,6 +126,11 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
         body()
         return jsonify(server=service.start_server(server_id))
 
+    @api.put('/servers/<server_id>/enabled')
+    def enabled(server_id):
+        data = body(required=('enabled',))
+        return jsonify(server=service.set_enabled(server_id, data['enabled']))
+
     @api.post("/servers/<server_id>/stop")
     def stop(server_id):
         body()

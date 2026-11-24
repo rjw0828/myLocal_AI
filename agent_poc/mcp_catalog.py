@@ -93,7 +93,7 @@ class MCPCatalog:
     def discover(self):
         entries, aliases, pairs, total_bytes = [], set(), set(), 0
         for server in self.service.list_servers():
-            if not server['execution_approved'] or server['status']['state'] != 'RUNNING':
+            if not server['enabled'] or not server['execution_approved'] or server['status']['state'] != 'RUNNING':
                 continue
             sid = server['server_id']
             for tool in self.service.catalog_tools(sid):

@@ -91,52 +91,10 @@ def install_tool_chat(app, backend, *, guard):
         if type(data['allowed']) is not bool:raise ToolChatError('invalid_tool_chat_input')
         return jsonify(backend.manager.set_permission(server_id,tool,data['allowed']))
 
-    @api.get('/policy/<server_id>')
-    def policy_view(server_id):
-        manager=backend.manager
-        manager.refresh_contracts()
-        tools=[]
-        for entry in manager.catalog.discover():
-            if entry.server_id==server_id:
-                tools.append({'name':entry.original_name,'catalog_fingerprint':entry.identity,
-                    'input_schema':entry.descriptor['input_schema']})
-        return jsonify(server=manager.details(server_id),tools=tools,
-            limitation='Execution configuration changes require stop, delete and registration of a reviewed profile.')
-
-    @api.put('/policy/<server_id>/mode')
-    def policy_mode(server_id):
-        data=body(('mode','enable_auto'))
-        if type(data['enable_auto']) is not bool:raise ToolChatError('invalid_tool_chat_input')
-        backend.manager.set_mode(data['mode'],server_id=server_id,enable_auto=data['enable_auto'])
-        if not data['enable_auto']:backend.manager.policy.disable_auto()
-        return policy_view(server_id)
-
-    @api.post('/policy/<server_id>/trust')
-    def trust(server_id):
-        data=body(('tool','catalog_fingerprint','confirmed','verified_read_only'),('resource',))
-        if data['confirmed'] is not True or type(data['verified_read_only']) is not bool:
-            raise ToolChatError('invalid_tool_chat_input')
-        entry=backend.manager.entry(server_id,data['tool'])
-        if data['catalog_fingerprint']!=entry.identity:raise ToolChatError('stale_approval')
-        resource=data.get('resource')
-        if resource is not None and (not isinstance(resource,str) or not resource.strip() or len(resource)>32767):
-            raise ToolChatError('invalid_tool_chat_input')
-        tid=backend.manager.trust(server_id,data['tool'],resource=resource,
-            verified_read_only=data['verified_read_only'],
-            confirm=lambda r:r['catalog_fingerprint']==data['catalog_fingerprint'])
-        return jsonify(trust_id=tid)
-
-    @api.delete('/policy/<server_id>/trust/<trust_id>')
-    def revoke(server_id,trust_id):
-        if trust_id not in {r['trust_id'] for r in backend.manager.details(server_id)['trusts']}:
-            raise ToolChatError('stale_approval')
-        backend.manager.revoke_trust(trust_id)
-        return jsonify(revoked=True)
-
-    @api.post('/policy/<server_id>/decision')
-    def decision(server_id):
-        data=body(('tool','arguments'))
-        return jsonify(decision=backend.manager.decision(server_id,data['tool'],data['arguments']))
+    @api.route('/policy/<path:legacy_path>', methods=['GET','POST','PUT','DELETE'])
+    def legacy_policy(legacy_path):
+        return jsonify(error={'code':'session_permission_required',
+            'message':'Use /sessions/<session_id>/permission. Server/tool trust settings are retired.'}),410
 
     from .approval_core import ApprovalError
     from .approval_policy import PolicyError
@@ -156,7 +114,7 @@ def install_tool_chat(app, backend, *, guard):
     def core_error(error):
         code = error.code
         status_code = (504 if code == "job_timeout" else
-                       503 if code == "service_closed" else
+                       503 if code in {"service_closed", "agent_model_unavailable"} else
                        404 if code in {"job_not_found", "session_not_found"} else
                        429 if code == "job_capacity" else
                        409 if code in {"session_reserved", "session_unsettled", "job_busy", "stale_approval", "job_ended", "session_changed", "operation_unresolved"} else 400)

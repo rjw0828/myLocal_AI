@@ -307,3 +307,52 @@ def check_answer(question, answer, core, rid, entries, roots, *, job_id, session
     return {'coverage': 'ambiguous' if needed != original else 'matched' if needed else 'not_applicable',
             'time_consistency': 'no_explicit_contradiction' if time_checked else 'not_checked',
             'answer_semantics': 'not_verified'}
+
+
+def conversation_outcomes(core, rid, entries, *, session_id, revision):
+    """Separate approval outcomes from settled execution outcomes; no inference."""
+    pinned = {(e.server_id,e.original_name,e.identity) for e in entries}
+    operations = {b['proposal_id']:oid for oid,b in core._operations.items() if b['run_id']==rid}
+    calls = []
+    for (run_id,call_id),(pid,entry) in core._calls.items():
+        if run_id != rid: continue
+        proposal = core.proposal(rid,pid)
+        if (proposal['run_id']!=rid or proposal['tool_call_id']!=call_id
+                or proposal['session_id']!=session_id or proposal['revision']!=revision
+                or proposal['catalog_fingerprint']!=entry.identity
+                or fingerprint(json.loads(proposal['arguments_json']))!=proposal['arguments_fingerprint']
+                or fingerprint(entry.descriptor)!=entry.identity
+                or (entry.server_id,entry.original_name,entry.identity) not in pinned):
+            raise ToolChatError('tool_evidence_missing')
+        record = {'tool_call_id':call_id,'proposal_id':pid,'server_id':entry.server_id,
+                  'tool_name':entry.original_name,'operation_id':operations.get(pid)}
+        if proposal['state']=='DENIED' and pid not in operations:
+            calls.append({**record,'status':'DENIED','result':None}); continue
+        operation = core.operation(operations[pid]) if pid in operations else None
+        if (proposal['state']!='CONSUMED' or operation is None or operation['unsettled']
+                or operation['operation_id']!=operations[pid] or operation['server_id']!=entry.server_id
+                or operation['sent'] is not True or operation['accepted'] is not True
+                or not operation['proposal_consumed'] or not operation['service_token_consumed']):
+            raise ToolChatError('tool_evidence_missing')
+        result = operation.get('result')
+        if not isinstance(result,dict): raise ToolChatError('tool_evidence_missing')
+        if operation['state']=='COMPLETED' and result.get('is_error') is False:
+            status='SUCCEEDED'
+        elif operation['state']=='FAILED' and operation['error']=='tool_returned_error' and result.get('is_error') is True:
+            status='FAILED'
+        else: raise ToolChatError('tool_evidence_missing')
+        calls.append({**record,'status':status,'result':result})
+    return calls
+
+
+def partial_answer(calls):
+    """Render actual data for mixed/denied outcomes instead of trusting an
+    unconstrained model paragraph to describe a failed call truthfully."""
+    if not any(c['status']!='SUCCEEDED' for c in calls): return None
+    labels={'SUCCEEDED':'성공','FAILED':'Tool 오류 · 성공하지 않음','DENIED':'사용자 거부 · 실행하지 않음'}
+    lines=['요청한 Tool 작업 중 완료되지 않은 항목이 있습니다.','아래는 실제 호출별 결과입니다.']
+    for call in calls:
+        lines.append(f"\n- {call['tool_name']}: {labels[call['status']]}")
+        if call['result'] is not None:
+            lines.extend(['```json',json.dumps(call['result'],ensure_ascii=False,indent=2),'```'])
+    return '\n'.join(lines)

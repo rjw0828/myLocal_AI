@@ -162,7 +162,7 @@
     _snapshot(record) {
       return { sessionId: record.sessionId, jobId: record.jobId, browserGeneration: record.browserGeneration,
         viewGeneration: record.viewGeneration, backendRevision: record.backendRevision, resetVersion: record.resetVersion,
-        state: record.state, phase: record.phase, localState: record.localState,
+        state: record.state, phase: record.phase, model: record.model, localState: record.localState,
         reservation_owned: record.reservationOwned, unsettled: record.unsettled, operationId: record.operationId,
         approval: this._visible(record) ? copy(record.approval) : null, approvalVersion: record.approvalVersion,
         cancelIntent: record.cancelIntent, verificationRequired: record.verificationRequired,
@@ -277,6 +277,7 @@
           || r.backendRevision !== null && job.revision !== r.backendRevision) invalid();
       const oldState = r.state;
       r.jobId = job.job_id; r.backendRevision = job.revision; r.state = job.state; r.phase = job.phase || job.state;
+      r.model = typeof job.model === 'string' ? job.model : null;
       r.reservationOwned = job.reservation_owned; r.unsettled = job.unsettled; r.operationId = job.operation_id;
       r.verificationRequired = false; r.localState = "TRACKING"; r.errorCode = job.error_code || null; r.retries = 0;
       const proposal = job.state === "WAITING_APPROVAL" ? job.pending : null;

@@ -71,7 +71,7 @@ class MCPApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.json)
 
     def permit(self, sid, allowed=True):
-        response = self.request(f"/mcp/servers/{sid}/tools/echo/permission", "PUT", {"allowed": allowed})
+        response = self.request(f"/mcp/servers/{sid}/enabled", "PUT", {"enabled": allowed})
         self.assertEqual(response.status_code, 200, response.json)
 
     def approve(self, sid, arguments=None):
@@ -100,6 +100,13 @@ class MCPApiTests(unittest.TestCase):
         row = response.json["servers"][0]
         self.assertEqual(row["server_id"], sid)
         self.assertEqual(row["status"]["state"], "STOPPED")
+        self.assertFalse(row['enabled'])
+        endpoint = f'/mcp/servers/{sid}/enabled'
+        self.assertEqual(self.client.put(endpoint, json={'enabled':True}).status_code, 403)
+        self.assertEqual(self.request(endpoint, 'PUT', {'enabled':'yes'}).status_code, 400)
+        self.assertTrue(self.request(endpoint, 'PUT', {'enabled':True}).json['server']['enabled'])
+        self.assertIsNone(self.service._runtime)
+        self.assertEqual(self.scenario.starts, 0)
         self.assertNotIn("executable", row)
         self.assertNotIn("args", row)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
@@ -159,12 +166,12 @@ class MCPApiTests(unittest.TestCase):
         self.start(sid)
         self.assertEqual(self.call(sid, old).status_code, 403)
 
-    def test_changed_tool_descriptor_revokes_effective_permission(self):
+    def test_changed_tool_descriptor_invalidates_approval_without_disabling_server(self):
         sid = self.ready()
         token = self.approve(sid)
         self.description = "changed tool behavior description"
         tools = self.request(f"/mcp/servers/{sid}/tools").json["tools"]
-        self.assertFalse(tools[0]["allowed"])
+        self.assertTrue(tools[0]["allowed"])
         self.assertEqual(self.call(sid, token).status_code, 403)
         self.assertEqual(len(self.scenario.calls), 0)
 

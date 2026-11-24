@@ -36,10 +36,10 @@ async function setup(options = {}) {
     async start() { f.unlock(); f.nodes["tool-chat-mode"].click(); f.input("message", "question"); enter(f); await flush(); },
     check,
     async waiting(proposal = p()) { Object.assign(state, { state: "WAITING_APPROVAL", pending: proposal }); await check(); },
-    async complete(answer = "final answer") {
+    async complete(answer = "final answer", toolCalls = []) {
       Object.assign(state, { state: "COMPLETED", pending: null, reservation_owned: false, unsettled: false,
         result: { session_id: state.session_id, message: answer, model: "qwen3.5:9b", revision: 8,
-          metrics: { eval_count: 4 }, elapsed_seconds: 1 } });
+          metrics: { eval_count: 4 }, elapsed_seconds: 1, tool_calls: toolCalls } });
       f.serverHistories.set(state.session_id, [{ role: "user", content: "question" }, { role: "assistant", content: answer, language: "ko" }]);
       await check();
     },
@@ -88,7 +88,7 @@ test("approval displays exact root-wide recursive scope safely and is never auto
   assert.equal(f.nodes["tool-chat-approval-description"].textContent, proposal.description);
   assert.equal(f.nodes["tool-chat-approval-description"].children.length, 0);
   assert.deepEqual(JSON.parse(f.nodes["tool-chat-approval-scope"].textContent), scope);
-  assert.match(f.nodes["tool-chat-approval-notice"].textContent, /ROOT-WIDE.*includes subdirectories: YES/);
+  assert.match(f.nodes["tool-chat-approval-notice"].textContent, /Root boundary.*includes subdirectories: YES/);
   assert.equal(count(f, jobUrl + "/approval"), 0);
   const logs = text(f.nodes["output-log"]); assert.ok(!logs.includes("PRIVATE")); assert.ok(!logs.includes("throw 1"));
 });
@@ -102,27 +102,42 @@ test("Allow sends exact displayed scope once and prevents duplicate clicks", asy
   Object.assign(f.state(), { state: "RUNNING", pending: null }); d.resolve(packet({ job: f.state() }, 202)); await flush();
   assert.equal(f.nodes["tool-chat-dialog"].open, false);
 });
-test("Close and Esc only hide; explicit review reopens; Deny posts false", async () => {
+test("Close and Esc only hide; explicit review reopens; Deny resumes conversation without replay", async () => {
   const f = await setup(); await f.start(); await f.waiting();
+  f.handlers[jobUrl + '/approval'] = request => {
+    assert.equal(JSON.parse(request.body).allow, false);
+    Object.assign(f.state(), {state:'RUNNING', pending:null});
+    return packet({job:f.state()},202);
+  };
   f.nodes["tool-chat-approval-close"].click(); assert.equal(count(f, jobUrl + "/approval"), 0);
   f.nodes["tool-chat-check"].click(); assert.equal(f.nodes["tool-chat-dialog"].open, true);
   f.nodes["tool-chat-dialog"].dispatchEvent({ type: "cancel", preventDefault() {} });
   assert.equal(count(f, jobUrl + "/approval"), 0); f.nodes["tool-chat-check"].click(); f.nodes["tool-chat-deny"].click(); await flush();
   assert.equal(JSON.parse(f.requests.find((r) => r.url === jobUrl + "/approval").options.body).allow, false);
-  assert.match(f.nodes["tool-chat-status"].textContent, /Cancelled/);
+  assert.match(f.nodes["tool-chat-status"].textContent, /Running/);
+  await f.complete('The requested Tool was denied; it did not execute.', [{status:'DENIED'}]);
+  assert.match(f.nodes['tool-chat-status'].textContent, /Completed/);
+  await f.check(); assert.equal(count(f, '/tool-chat/jobs'),1);
 });
-test("proposal replacement invalidates old ticket and only the new proposal can be allowed", async () => {
+test("next approval in the same Job requires a fresh review and exact proposal", async () => {
   const f = await setup(); await f.start(); await f.waiting();
-  Object.assign(f.state(), { pending: p("p-2") });
-  // Poll directly: Review button intentionally reopens current already-known proposal.
-  const timer = [...f.timers.values()].find((t) => t.ms === 1000); assert.ok(timer); timer.callback(); await flush();
-  assert.equal(f.nodes["tool-chat-dialog"].open, false);
-  f.nodes["tool-chat-allow"].click(); await flush(); assert.equal(count(f, jobUrl + "/approval"), 0);
-  f.nodes["tool-chat-check"].click(); assert.equal(f.nodes["tool-chat-dialog"].open, true);
-  f.nodes["tool-chat-allow"].click(); await flush();
-  const sent = JSON.parse(f.requests.find((r) => r.url === jobUrl + "/approval").options.body);
-  assert.equal(sent.proposal_id, "p-2");
+  f.handlers[jobUrl + '/approval'] = request => {
+    const id=JSON.parse(request.body).proposal_id;
+    Object.assign(f.state(), {state:id==='p-1'?'WAITING_APPROVAL':'RUNNING', pending:id==='p-1'?p('p-2'):null});
+    return packet({job:f.state()},202);
+  };
+  f.nodes['tool-chat-allow'].click(); await flush();
+  assert.equal(count(f,jobUrl+'/approval'),1);
+  assert.equal(f.nodes['tool-chat-dialog'].open,false);
+  f.nodes['tool-chat-allow'].click(); await flush();
+  assert.equal(count(f,jobUrl+'/approval'),1);
+  f.nodes['tool-chat-check'].click(); await flush();
+  assert.equal(f.nodes['tool-chat-dialog'].open,true);
+  f.nodes['tool-chat-allow'].click(); await flush();
+  const ids=f.requests.filter(r=>r.url===jobUrl+'/approval').map(r=>JSON.parse(r.options.body).proposal_id);
+  assert.deepEqual(ids,['p-1','p-2']);
 });
+
 test("Cancel with reservation blocks Chat, Reset, Delete and Delete All until confirmed release", async () => {
   const f = await setup(); await f.start();
   f.handlers[jobUrl + "/cancel"] = () => { Object.assign(f.state(), { state: "CANCELLED", cancelled: true, reservation_owned: true }); return packet({ job: f.state() }); };
@@ -479,9 +494,23 @@ test("terminal invalid path failure stops polling and releases a known settled r
   assert.equal([...f.timers.values()].filter((t) => t.ms === 1000).length, 0);
 });
 
+test("backend phases and pinned model are shown without enabling retries", async () => {
+  const f = await setup(); await f.start();
+  Object.assign(f.state(), { phase: 'MODEL_RESPONSE', model: 'installed:8b' }); await f.check();
+  assert.match(f.nodes['tool-chat-status'].textContent, /모델 응답 생성 중.*installed:8b/);
+  Object.assign(f.state(), { phase: 'TOOL_EXECUTING' }); await f.check();
+  assert.match(f.nodes['tool-chat-status'].textContent, /Tool 실행 중/);
+  Object.assign(f.state(), { phase: 'FINAL_RESPONSE' }); await f.check();
+  assert.match(f.nodes['tool-chat-status'].textContent, /최종 답변 생성 중|Tool 결과로 답변 생성 중/);
+  Object.assign(f.state(), { state: 'FAILED', error_code: 'agent_run_failed', reservation_owned: false }); await f.check();
+  assert.match(f.nodes['tool-chat-status'].textContent, /Job job-1.*자동 재실행하지 않습니다/);
+  assert.equal(count(f, '/tool-chat/jobs'), 1);
+});
+
 test("disabled experimental engine keeps ordinary Chat without tracker requests", async () => {
   const f = await fixture({ agentEnabled: false });
   f.unlock(); f.input("message", "hello"); enter(f); await flush();
+  assert.equal(f.nodes['tool-chat-mode'].disabled, true);
   assert.equal(count(f, "/chat"), 1); assert.equal(count(f, "/tool-chat/jobs"), 0);
 });
 

@@ -42,6 +42,25 @@ def public_config(config):
 
 
 class MCPManagement:
+    @classmethod
+    def attach(cls, service, policy):
+        """Reuse the Console-owned service/Registry; never copy or edit profiles."""
+        if type(service) is not MCPService or type(policy) is not ApprovalPolicy:
+            raise TypeError('Existing MCPService and separate ApprovalPolicy required')
+        manager = cls.__new__(cls)
+        manager.service, manager.policy = service, policy
+        manager.base = policy.path.parent
+        manager.manifest = manager.requests = None
+        manager._runtime_factory = service._runtime_factory
+        manager._runtime = None
+        manager._attached = True
+        manager._binder = None
+        manager._tests, manager._scopes, manager._contract_records = {}, {}, {}
+        manager._lock = RLock()
+        manager.catalog = MCPCatalog(service)
+        policy.contract_verifier = lambda entry: manager.verified_scope(entry, live=False)
+        return manager
+
     def __init__(self, base, *, runtime_factory, contract_binder=None, session_database_path=None):
         self.base = experimental_path(base)
         repository=Path(__file__).resolve().parents[1]
@@ -121,11 +140,20 @@ class MCPManagement:
             self._remember_contract(sid,scope,context,proof)
 
     def _profiles(self):
+        if getattr(self, '_attached', False):
+            return list(self.service.profiles().values())
         experimental_path(self.manifest)
         return [ServerConfig(p['profile_id'], p['executable'], p.get('args',()), p.get('cwd'), p.get('env',()))
                 for p in read_manifest(self.manifest)['profiles']]
 
     def _get_runtime(self):
+        if getattr(self, '_attached', False):
+            with self.service._lock:
+                self.service._open()
+                if self.service._runtime is None:
+                    self.service._runtime = self.service._runtime_factory()
+                self._runtime = self.service._runtime
+                return self._runtime
         if self._runtime is None: self._runtime = self._runtime_factory()
         return self._runtime
 
@@ -145,6 +173,8 @@ class MCPManagement:
     def add_server(self, name, executable, arguments, *, confirm, cwd=None, env=(),
                    root=None, timeout=30, mode=None):
         """confirm sees exact arguments; approves persistence ONLY, never launch."""
+        if getattr(self, '_attached', False):
+            raise ManagementError('Use the existing Console local profile registration')
         with self._lock:
             if not isinstance(name,str) or not name.strip() or len(name)>128:
                 raise ManagementError('Display name is required (max 128)')
@@ -243,6 +273,11 @@ class MCPManagement:
         self.policy.invalidate_server(server_id,reason='permission_changed')
         return result
 
+    def set_enabled(self, server_id, enabled):
+        result = self.service.set_enabled(server_id, enabled)
+        self.policy.invalidate_server(server_id, reason='server_enabled_changed')
+        return result
+
     def set_mode(self, mode, *, server_id=None, enable_auto=False):
         if server_id is not None:self.service.get_server(server_id)
         self.policy.set_mode(mode,server_id=server_id,enable_auto=enable_auto)
@@ -337,5 +372,6 @@ class MCPManagement:
         try:
             for tid in tuple(self._tests):self.cancel_test(tid)
         finally:
-            self.service.shutdown()
-            if self._runtime is not None and self.service._runtime is None:self._runtime.shutdown()
+            if not getattr(self, '_attached', False):
+                self.service.shutdown()
+                if self._runtime is not None and self.service._runtime is None:self._runtime.shutdown()

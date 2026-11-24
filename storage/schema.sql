@@ -7,6 +7,8 @@ CREATE TABLE sessions (
     system_prompt TEXT,
     last_response_language TEXT CHECK(last_response_language IN ('ko', 'en')),
     revision INTEGER NOT NULL DEFAULT 0,
+    permission TEXT NOT NULL DEFAULT 'MANUAL' CHECK(permission IN ('MANUAL','ALLOW_ALL')),
+    manual_generation INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -24,4 +26,4 @@ CREATE TABLE deleted_sessions (
     session_id TEXT PRIMARY KEY,
     deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;

@@ -80,13 +80,19 @@ class SessionDeleting(RuntimeError):
 
 
 def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_configs=None,
-               mcp_runtime_factory=None, mcp_existing_service=None, agent_backend_factory=None) -> Flask:
+               mcp_runtime_factory=None, mcp_existing_service=None, agent_backend_factory=None,
+               enable_agent=False, agent_policy_path=None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
                         limit=MAX_ACTIVE_SESSIONS)
     model_selection = ModelSelection(store.path.parent / 'model_settings.json', ai_controller.MODEL)
     app.extensions['model_selection'] = model_selection
+    agent_selection = model_selection  # One persisted choice for Chat, Voice and new Agent Jobs.
+    app.extensions['agent_model_selection'] = agent_selection
+    agent_custom_factory = agent_backend_factory is not None
+    agent_status = {'enabled': False, 'requested': bool(enable_agent or agent_custom_factory), 'reason': 'disabled'}
+    app.extensions['agent_status'] = agent_status
     app.extensions["session_store"] = store
     sessions: dict[str, Session] = {}
     deleted_session_ids: set[str] = set()
@@ -204,6 +210,22 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
             sessions[session_id] = session
             summary = session_summary(session_id, session)
         return jsonify(summary), 201
+
+    @app.route('/sessions/<session_id>/permission', methods=['GET','PUT'])
+    def session_permission(session_id):
+        denied = model_control_guard()
+        if denied is not None:
+            return denied
+        if request.method == 'PUT':
+            data = request.get_json(silent=True) if request.is_json else None
+            if not isinstance(data, dict) or set(data) != {'mode'} or data['mode'] not in ('MANUAL','ALLOW_ALL'):
+                return error_response('invalid_session_permission', 'Manual 또는 Allow All을 선택해주세요.', 400)
+            permission = store.set_permission(session_id, data['mode'])
+        else:
+            permission = store.permission(session_id)
+        if permission is None:
+            return error_response('session_not_found', '세션을 찾을 수 없습니다.', 404)
+        return jsonify(session_id=session_id, **permission)
 
     @app.delete("/sessions")
     def delete_all_sessions() -> Response:
@@ -345,7 +367,9 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     @app.get("/")
     def index() -> str:
         return render_template("index.html", agent_enabled=agent_backend_factory is not None,
-                               agent_model=getattr(app.extensions.get('tool_chat'),'model_name',None))
+                               agent_model=(getattr(app.extensions.get('tool_chat'),'model_name',None)
+                                            if agent_custom_factory else agent_selection.current()),
+                               agent_reason=agent_status['reason'])
 
     @app.get("/health")
     def health() -> tuple[Response, int]:
@@ -367,7 +391,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
 
     @app.after_request
     def model_response_headers(response):
-        if request.path in {'/models', '/models/selection'}:
+        if request.path in {'/models', '/models/selection'} or request.path.startswith('/sessions/') and request.path.endswith('/permission'):
             response.headers['Cache-Control'] = 'no-store'
             response.headers['X-Content-Type-Options'] = 'nosniff'
         return response
@@ -381,15 +405,26 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
             names = ai_controller.list_models()
         except (OSError, TimeoutError, ValueError):
             return error_response('model_list_unavailable', 'Ollama 설치 모델 목록을 읽지 못했습니다.', 503)
-        state = model_selection.status()
+        scope = request.args.get('scope', 'chat_voice')
+        if scope not in {'chat_voice','agent'}:
+            return error_response('invalid_model_scope', '모델 설정 범위가 올바르지 않습니다.', 400)
+        state = (agent_selection if scope == 'agent' else model_selection).status()
+        if scope == 'agent' and agent_custom_factory:
+            state['selected'] = getattr(tool_backend, 'model_name', state['selected'])
         return jsonify(models=names, **state, selected_available=state['selected'] in names,
-                       scope='chat_voice', agent_model=getattr(tool_backend, 'model_name', None))
+                       scope=scope, agent_model=agent_selection.current(), agent_status=agent_status,
+                       configurable=scope != 'agent' or not agent_custom_factory)
 
     @app.put('/models/selection')
     def select_model():
         denied = model_control_guard()
         if denied is not None:
             return denied
+        scope = request.args.get('scope', 'chat_voice')
+        if scope not in {'chat_voice','agent'}:
+            return error_response('invalid_model_scope', '모델 설정 범위가 올바르지 않습니다.', 400)
+        if scope == 'agent' and agent_custom_factory:
+            return error_response('agent_model_fixed', '이 별도 호스트는 실행 시 지정한 Agent 모델을 사용합니다.', 409)
         data = request.get_json(silent=True) if request.is_json else None
         if not isinstance(data, dict) or set(data) != {'model'} or not ModelSelection.valid(data['model']):
             return error_response('invalid_model', '설치된 모델을 선택해주세요.', 400)
@@ -398,14 +433,14 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         except (OSError, TimeoutError, ValueError):
             return error_response('model_list_unavailable', 'Ollama 설치 모델 목록을 읽지 못했습니다.', 503)
         try:
-            state = model_selection.select(data['model'], names)
+            state = (agent_selection if scope == 'agent' else model_selection).select(data['model'], names)
         except SelectionBusy:
             return error_response('model_busy', '응답 완료 후 모델을 변경해주세요.', 409)
         except ValueError:
             return error_response('invalid_model', '모델이 설치 목록에 없습니다. 목록을 새로고침해주세요.', 400)
         except (OSError, TimeoutError):
             return error_response('model_selection_unavailable', '모델 목록 조회 또는 선택 저장에 실패했습니다.', 503)
-        return jsonify(**state, scope='chat_voice')
+        return jsonify(**state, scope=scope)
 
     @app.post("/chat")
     def chat() -> tuple[Response, int]:
@@ -727,6 +762,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
             first = message.strip().replace("\r", " ").replace("\n", " ")
             title = row["title"] if row["titled"] else first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
             return {"session_id": session_id, "revision": row["revision"], "reservation_owner": owner,
+                    "permission": {"mode": row['permission'], "manual_generation": row['manual_generation']},
                     "question": message, "language": language, "system_prompt": prompt, "title": title, "messages": history}
         except Exception:
             reservations.release(session_id, owner)
@@ -756,16 +792,36 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         row = store.load(session_id)
         return row['revision'] if row is not None else None
 
-    tool_backend = (agent_backend_factory(mcp_service, tool_session_revision, prepare_tool_chat, commit_tool_chat)
-                    if agent_backend_factory else DisabledBackend())
+    if enable_agent and agent_backend_factory is None:
+        try:
+            from agent_poc.console_integration import backend_factory, policy_path
+            agent_backend_factory = backend_factory(agent_selection, agent_policy_path or policy_path(store.path))
+        except ImportError as error:
+            agent_status['reason'] = 'missing_dependencies'
+            app.logger.warning('Agent unavailable error_type=%s', type(error).__name__)
+    try:
+        tool_backend = (agent_backend_factory(mcp_service, tool_session_revision, prepare_tool_chat, commit_tool_chat)
+                        if agent_backend_factory else DisabledBackend())
+    except Exception as error:
+        if agent_custom_factory:
+            raise
+        app.logger.warning('Agent startup failed error_type=%s', type(error).__name__)
+        agent_backend_factory = None
+        agent_status['reason'] = 'startup_failed'
+        tool_backend = DisabledBackend()
+    agent_status['enabled'] = agent_backend_factory is not None
+    if agent_status['enabled']:
+        agent_status['reason'] = 'enabled'
     app.extensions["tool_chat"] = tool_backend
     if agent_backend_factory:
+        tool_backend.permission_reader = store.permission
+        tool_backend.permission_guard = store.permission_lock
         install_tool_chat(app, tool_backend, guard=app.extensions["mcp_request_guard"])
     return app
 
 
 if __name__ == "__main__":
-    application = create_app()
+    application = create_app(enable_agent=os.environ.get('LOCAL_AI_AGENT_ENABLED') == '1')
     try:
         application.run(host=HOST, port=PORT, debug=False, use_reloader=False)
     finally:

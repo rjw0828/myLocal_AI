@@ -36,7 +36,7 @@ class AgentWebTests(unittest.TestCase):
         self.addCleanup(self.manager.shutdown)
         self.sid=self.manager.add_server('Time',sys.executable,['-m','mcp_server_time','--local-timezone=Asia/Seoul'],confirm=lambda _:True)['server_id']
         self.manager.test_connection(self.sid,confirm=lambda _:True)
-        self.manager.set_permission(self.sid,'get_current_time',True)
+        self.manager.set_enabled(self.sid,True)
         self.behavior='tools';self.history_seen=[];self.model_started=Event();self.model_release=Event()
         async def model(messages,info):
             self.history_seen=messages
@@ -46,6 +46,7 @@ class AgentWebTests(unittest.TestCase):
                 while not self.model_release.is_set():await asyncio.sleep(.01)
             if self.behavior=='timeout':raise TimeoutError('mock transport timeout')
             if self.behavior=='error':raise ValueError('private upstream failure')
+            if self.behavior=='chat':return ModelResponse(parts=[TextPart('Hello, how can I help?')])
             if self.behavior=='no_tools':return ModelResponse(parts=[TextPart('Invented current time')])
             if any(getattr(p,'part_kind','')=='tool-return' for m in messages for p in m.parts):
                 return ModelResponse(parts=[TextPart('현재 한국 시간은 오전 9시 30분입니다.')])
@@ -92,12 +93,18 @@ class AgentWebTests(unittest.TestCase):
         self.assertIn('9시 30분',job['result']['message'])
         self.assertIn('현재 한국',str(self.history()))
 
-    def test_auto_safe_uses_existing_policy_without_pending_popup(self):
-        self.manager.trust(self.sid,'get_current_time',verified_read_only=True,confirm=lambda _:True)
-        self.manager.set_mode('AUTO_ALLOW_SAFE',server_id=self.sid,enable_auto=True)
+    def test_session_allow_all_needs_no_tool_trust_and_is_isolated(self):
+        path='/sessions/'+self.session+'/permission'
+        self.assertEqual(self.client.get(path,headers=HEADERS).json['mode'],'MANUAL')
+        self.assertEqual(self.client.put(path,headers=HEADERS,json={'mode':'ALLOW_ALL'}).status_code,200)
         job=self.wait(self.create(),('COMPLETED','FAILED'))
         self.assertEqual(job['state'],'COMPLETED',job);self.assertEqual(self.runtime.sends,1)
         self.assertTrue(any(a['event']=='operation_admitted' and a['method']=='AUTO' for a in self.manager.audit()))
+        other=self.client.post('/sessions',json={}).json['session_id']
+        self.assertEqual(self.client.get('/sessions/'+other+'/permission',headers=HEADERS).json['mode'],'MANUAL')
+        jid=self.create(session=other);pending=self.wait(jid)
+        self.assertEqual(pending['state'],'WAITING_APPROVAL');self.assertEqual(self.runtime.sends,1)
+        self.decide(jid,False)
 
     def test_allow_response_consistent_before_worker_resumes(self):
         jid=self.create();pending=self.wait(jid)['pending']
@@ -121,8 +128,10 @@ class AgentWebTests(unittest.TestCase):
         self.assertEqual(len(self.history()['messages']),2)
 
     def test_deny_never_executes_or_stores_answer(self):
-        jid=self.create();self.decide(jid,False);job=self.wait(jid,('FAILED','CANCELLED'))
-        self.assertIsNone(job['result']);self.assertEqual(self.runtime.sends,0)
+        jid=self.create();self.decide(jid,False);job=self.wait(jid,('COMPLETED','FAILED'))
+        self.assertEqual(job['state'],'COMPLETED',job)
+        self.assertEqual(job['result']['tool_calls'][0]['status'],'DENIED')
+        self.assertEqual(self.runtime.sends,0)
         self.assertNotIn('9시',str(self.history()))
 
     def test_same_session_chat_and_second_job_blocked(self):
@@ -152,7 +161,7 @@ class AgentWebTests(unittest.TestCase):
 
     def test_schema_or_permission_change_stales_proposal(self):
         jid=self.create();job=self.wait(jid)
-        self.manager.set_permission(self.sid,'get_current_time',False)
+        self.manager.set_enabled(self.sid,False)
         r=self.client.post('/tool-chat/jobs/'+jid+'/approval',headers=HEADERS,json={
             'proposal_id':job['pending']['proposal_id'],'browser_generation':1,'allow':True})
         self.assertEqual(r.status_code,409);self.assertEqual(self.runtime.sends,0)
@@ -162,16 +171,16 @@ class AgentWebTests(unittest.TestCase):
         r=self.client.get('/tool-chat/policy/'+self.sid,headers={**HEADERS,'Origin':'https://example.com'})
         self.assertEqual(r.status_code,403)
 
-    def test_policy_ui_endpoints_current_fingerprint_required(self):
-        r=self.client.get('/tool-chat/policy/'+self.sid,headers=HEADERS)
-        entry=r.json['tools'][0]
-        request={'tool':entry['name'],'catalog_fingerprint':'stale','confirmed':True,'verified_read_only':True}
-        self.assertEqual(self.client.post('/tool-chat/policy/'+self.sid+'/trust',headers=HEADERS,json=request).status_code,409)
-        request['catalog_fingerprint']=entry['catalog_fingerprint']
-        self.assertEqual(self.client.post('/tool-chat/policy/'+self.sid+'/trust',headers=HEADERS,json=request).status_code,200)
-        self.assertEqual(self.client.put('/tool-chat/policy/'+self.sid+'/mode',headers=HEADERS,json={'mode':'AUTO_ALLOW_SAFE','enable_auto':True}).status_code,200)
-        r=self.client.post('/tool-chat/policy/'+self.sid+'/decision',headers=HEADERS,json={'tool':entry['name'],'arguments':{}})
-        self.assertEqual(r.json['decision']['action'],'AUTO_APPROVE')
+    def test_session_permission_api_retires_server_trust_and_rejects_invalid_modes(self):
+        base='/tool-chat/policy/'+self.sid
+        for path,method in ((base,'GET'),(base+'/mode','PUT'),(base+'/trust','POST')):
+            self.assertEqual(self.client.open(path,method=method,headers=HEADERS,json={}).status_code,410)
+        path='/sessions/'+self.session+'/permission'
+        self.assertEqual(self.client.get(path).status_code,403)
+        self.assertEqual(self.client.put(path,headers=HEADERS,json={'mode':'AUTO_ALLOW_SAFE'}).status_code,400)
+        self.assertEqual(self.client.put(path,headers={**HEADERS,'Origin':'https://evil.example'},json={'mode':'ALLOW_ALL'}).status_code,403)
+        self.assertEqual(self.client.get(path,headers=HEADERS).json['mode'],'MANUAL')
+        self.assertEqual(self.runtime.sends,0)
 
     def test_management_endpoints_reuse_owner_facade_without_tool_call(self):
         base='/tool-chat/management/servers/'+self.sid
@@ -180,31 +189,26 @@ class AgentWebTests(unittest.TestCase):
         response=self.client.post(base+'/connect',headers=HEADERS,json={'confirmed':True})
         self.assertEqual(response.status_code,200,response.json)
         self.assertTrue(response.json['result']['started']);self.assertEqual(self.runtime.sends,0)
-        response=self.client.put(base+'/tools/get_current_time/permission',headers=HEADERS,json={'allowed':False})
+        response=self.client.put('/mcp/servers/'+self.sid+'/enabled',headers=HEADERS,json={'enabled':False})
         self.assertEqual(response.status_code,200,response.json);self.assertEqual(self.runtime.sends,0)
-        self.assertEqual(self.client.get('/tool-chat/policy/'+self.sid,headers=HEADERS).json['tools'],[])
+        self.assertEqual(self.client.get('/tool-chat/policy/'+self.sid,headers=HEADERS).status_code,410)
 
-    def test_policy_modes_individual_trust_and_revoke(self):
-        view=self.client.get('/tool-chat/policy/'+self.sid,headers=HEADERS).json
-        entry=view['tools'][0]
-        self.assertIn('Execution configuration changes',view['limitation'])
-        request={'tool':entry['name'],'catalog_fingerprint':entry['catalog_fingerprint'],
-            'confirmed':True,'verified_read_only':True}
-        trust=self.client.post('/tool-chat/policy/'+self.sid+'/trust',headers=HEADERS,json=request)
-        self.assertEqual(trust.status_code,200,trust.json);tid=trust.json['trust_id']
-        for mode,action in (('ASK_EVERY_TIME','ASK'),('AUTO_ALLOW_SAFE','AUTO_APPROVE'),('ALLOW_ALL','AUTO_APPROVE')):
-            self.assertEqual(self.client.put('/tool-chat/policy/'+self.sid+'/mode',headers=HEADERS,
-                json={'mode':mode,'enable_auto':True}).status_code,200)
-            decision=self.client.post('/tool-chat/policy/'+self.sid+'/decision',headers=HEADERS,
-                json={'tool':entry['name'],'arguments':{}}).json['decision']
-            self.assertEqual(decision['action'],action,decision)
-        disabled=self.client.put('/tool-chat/policy/'+self.sid+'/mode',headers=HEADERS,
-            json={'mode':'ALLOW_ALL','enable_auto':False})
-        self.assertEqual(disabled.status_code,200);self.assertFalse(disabled.json['server']['auto_enabled'])
-        self.assertEqual(self.client.delete('/tool-chat/policy/'+self.sid+'/trust/'+tid,headers=HEADERS).status_code,200)
-        decision=self.client.post('/tool-chat/policy/'+self.sid+'/decision',headers=HEADERS,
-            json={'tool':entry['name'],'arguments':{}}).json['decision']
-        self.assertEqual(decision['action'],'ASK');self.assertEqual(self.runtime.sends,0)
+    def test_running_manual_job_does_not_gain_allow_all_and_next_call_requires_approval(self):
+        jid=self.create();first=self.wait(jid)['pending']['proposal_id']
+        path='/sessions/'+self.session+'/permission'
+        self.client.put(path,headers=HEADERS,json={'mode':'ALLOW_ALL'})
+        self.assertEqual(self.wait(jid)['state'],'WAITING_APPROVAL')
+        self.assertEqual(self.runtime.sends,0)
+        self.decide(jid);self.assertEqual(self.wait(jid,('COMPLETED','FAILED'))['state'],'COMPLETED')
+        self.behavior='slow'
+        next_id=self.create()
+        self.assertTrue(self.model_started.wait(2))
+        self.client.put(path,headers=HEADERS,json={'mode':'MANUAL'})
+        self.model_release.set()
+        second=self.wait(next_id)['pending']['proposal_id']
+        self.assertNotEqual(first,second);self.assertEqual(self.runtime.sends,1)
+        self.decide(next_id,False)
+        self.assertEqual(self.runtime.sends,1)
 
     def test_manual_mcp_api_uses_same_service(self):
         self.assertIs(self.app.extensions['mcp_service'],self.manager.service)
@@ -273,15 +277,21 @@ class AgentWebTests(unittest.TestCase):
         self.assertEqual(self.client.get('/tool-chat/jobs/missing',headers=HEADERS).status_code,404)
         r=self.client.post('/tool-chat/policy/'+self.sid+'/trust',headers=HEADERS,json={
             'tool':'unseen','catalog_fingerprint':'x','confirmed':True,'verified_read_only':True})
-        self.assertEqual(r.status_code,409)
+        self.assertEqual(r.status_code,410)
 
-    def test_execution_budget_blocks_extra_auto_calls(self):
-        self.backend.max_executions=1
-        self.manager.trust(self.sid,'get_current_time',verified_read_only=True,confirm=lambda _:True)
-        self.manager.set_mode('AUTO_ALLOW_SAFE',server_id=self.sid,enable_auto=True)
-        self.assertEqual(self.wait(self.create(),('COMPLETED','FAILED'))['state'],'COMPLETED')
-        job=self.wait(self.create(),('FAILED',))
-        self.assertEqual(job['error_code'],'execution_budget_exhausted');self.assertEqual(self.runtime.sends,1)
+    def test_auto_permission_narrowed_at_final_admission_sends_zero(self):
+        store=self.app.extensions['session_store'];store.set_permission(self.session,'ALLOW_ALL')
+        original=self.manager.policy.consume
+        def narrow(*args,**kwargs):
+            store.set_permission(self.session,'MANUAL')
+            store.set_permission(self.session,'ALLOW_ALL')  # ABA cannot revive this Job's grant.
+            return original(*args,**kwargs)
+        with patch.object(self.manager.policy,'consume',side_effect=narrow):
+            job=self.wait(self.create(),('FAILED',))
+        self.assertEqual(self.runtime.sends,0)
+        self.assertEqual(self.history()['messages'],[])
+        self.assertFalse(job['reservation_owned'])
+        self.assertEqual(job['error_code'],'session_permission_requires_manual')
 
     def test_history_only_user_and_final_assistant_not_tool_messages(self):
         jid=self.create();self.decide(jid);self.assertEqual(self.wait(jid,('COMPLETED','FAILED'))['state'],'COMPLETED')
@@ -290,20 +300,21 @@ class AgentWebTests(unittest.TestCase):
 
     def test_tool_chat_preserves_question_and_system_language(self):
         question='  original question\nwith formatting  '
-        self.behavior='no_tools'
+        self.behavior='chat'
         jid=self.create(message=question)
-        self.wait(jid,('FAILED',))
+        self.assertEqual(self.wait(jid,('COMPLETED','FAILED'))['state'],'COMPLETED')
         initial=self.backend._jobs[jid]['initial']
         self.assertEqual(initial['messages'][-1],{'role':'user','content':question})
         self.assertIn('Korean',initial['system_prompt'])
         self.assertNotIn('[Response requirements]',initial['messages'][-1]['content'])
+        self.assertEqual(len(self.history()['messages']),2)
+        self.assertEqual(self.runtime.sends,0)
+
+    def test_allow_all_still_blocks_disabled_server_without_send(self):
+        self.app.extensions['session_store'].set_permission(self.session,'ALLOW_ALL')
+        self.manager.set_enabled(self.sid,False)
+        self.behavior='no_tools'
+        job=self.wait(self.create(),('FAILED',))
+        self.assertEqual(job['error_code'],'tool_evidence_missing')
+        self.assertEqual(self.runtime.sends,0)
         self.assertEqual(self.history()['messages'],[])
-
-    def test_allow_all_explicit_time_trust_still_uses_core(self):
-        self.manager.trust(self.sid,'get_current_time',confirm=lambda _:True)
-        self.manager.set_mode('ALLOW_ALL',server_id=self.sid,enable_auto=True)
-        job=self.wait(self.create(),('COMPLETED','FAILED'))
-        self.assertEqual(job['state'],'COMPLETED',job);self.assertEqual(self.runtime.sends,1)
-
-
-if __name__=='__main__':unittest.main()

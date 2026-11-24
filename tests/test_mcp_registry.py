@@ -37,12 +37,27 @@ class MCPRegistryTests(unittest.TestCase):
             self.assertNotIn("state", columns)
             self.assertEqual(db.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
-    def test_default_permission_is_absent_and_revoke_is_persistent(self):
+    def test_enabled_defaults_off_and_v1_migration_preserves_legacy_rows(self):
         sid = self.registry.create("local", "local", self.config)["server_id"]
-        self.assertIsNone(self.registry.permission(sid, "echo"))
+        self.assertFalse(self.registry.get(sid)['enabled'])
         self.registry.set_permission(sid, "echo", "hash", True)
-        self.registry.set_permission(sid, "echo", "", False)
-        self.assertEqual(self.registry.permission(sid, "echo")["allowed"], 0)
+        # Reconstruct the previous schema in an isolated fixture, not a live DB.
+        with self.registry.connection(write=True) as db:
+            db.execute('ALTER TABLE mcp_servers DROP COLUMN enabled')
+            db.execute('ALTER TABLE mcp_servers DROP COLUMN enabled_generation')
+            db.execute('PRAGMA user_version = 1')
+        reopened = MCPRegistry(self.path, protected_path=self.protected)
+        self.assertFalse(reopened.get(sid)['enabled'])
+        self.assertEqual(reopened.get(sid)['config'], self.config)
+        self.assertEqual(reopened.permission(sid, 'echo')['schema_hash'], 'hash')
+        reopened.set_enabled(sid, True)
+        again = MCPRegistry(self.path, protected_path=self.protected)
+        self.assertTrue(again.get(sid)['enabled'])
+        self.assertEqual(again.get(sid)['enabled_generation'], 1)
+        again.set_enabled(sid, True)
+        self.assertEqual(again.get(sid)['enabled_generation'], 1)
+        again.set_enabled(sid, False)
+        self.assertFalse(MCPRegistry(self.path, protected_path=self.protected).get(sid)['enabled'])
 
     def test_duplicate_profile_or_identical_execution_is_rejected(self):
         self.registry.create("local", "local", self.config)

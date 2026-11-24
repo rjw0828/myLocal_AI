@@ -148,6 +148,7 @@ class MCPService:
     def _view(self, row):
         return {key: row[key] for key in ("server_id", "profile_id", "name", "created_at")} | {
             "transport": "stdio", "execution_approved": self._approved(row),
+            "enabled": row['enabled'],
             "status": public_status(self._status(row["server_id"])),
         }
 
@@ -292,8 +293,15 @@ class MCPService:
         raise MCPServiceError("mcp_tool_not_found", "MCP tool was not found.", 404)
 
     def _permission(self, server_id, name, schema_hash):
-        grant = self.registry.permission(server_id, name)
-        return bool(grant and grant["allowed"] and grant["schema_hash"] == schema_hash)
+        # Legacy descriptor field retained for ApprovalPolicy compatibility.
+        # Schema/config/connection identity is checked separately at dispatch.
+        return self.registry.get(server_id)['enabled']
+
+    def set_enabled(self, server_id, enabled):
+        with self._guard(server_id):
+            row = self.registry.set_enabled(server_id, enabled)
+            self._clear_tokens(server_id)
+            return self._view(row)
 
     def list_tools(self, server_id):
         with self._guard(server_id) as row:
@@ -302,13 +310,7 @@ class MCPService:
                     for tool in self._tools(row)]
 
     def set_permission(self, server_id, name, allowed):
-        with self._guard(server_id) as row:
-            schema_hash = self._schema_hash(self._tool(row, name)) if allowed else ""
-            self.registry.set_permission(server_id, name, schema_hash, allowed)
-            key = (server_id, name)
-            self._permission_generations[key] = self._permission_generations.get(key, 0) + 1
-            self._clear_tokens(server_id, name)
-            return {"tool_name": name, "allowed": allowed, "schema_hash": schema_hash}
+        raise MCPServiceError('mcp_tool_permissions_retired', 'Use server Enabled instead of per-tool permissions.', 409)
 
     def permissions(self, server_id):
         return [row | {"allowed": bool(row["allowed"])} for row in self.registry.list_permissions(server_id)]
@@ -338,7 +340,7 @@ class MCPService:
             "source": {"config_hash": row["config_hash"],
                        "connection_generation": (self._runtime.connection_generation(server_id)
                                                  if connection_generation is None else connection_generation),
-                       "permission_generation": self._permission_generations.get((server_id, tool.name), 0)},
+                       "permission_generation": row['enabled_generation']},
         }
 
     def validate_catalog_arguments(self, server_id, name, arguments, expected_fingerprint):

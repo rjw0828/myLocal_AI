@@ -49,11 +49,25 @@ class MCPRegistry:
                     raise MCPServiceError("mcp_registry_schema", "Unsupported MCP storage schema.", 503)
                 schema = Path(__file__).with_name("registry.sql").read_text(encoding="utf-8")
                 db.executescript("BEGIN IMMEDIATE;\n" + schema + "\nCOMMIT;")
-            elif version != 1 or db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
+            elif version not in (1, 2) or db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
                 raise MCPServiceError("mcp_registry_schema", "Unsupported MCP storage schema.", 503)
+            if version == 1:
+                db.execute('SELECT server_id,profile_id,name,config_json,config_hash,created_at FROM mcp_servers LIMIT 0')
+                db.execute('SELECT server_id,tool_name,schema_hash,allowed,updated_at FROM mcp_tool_permissions LIMIT 0')
+                db.execute('BEGIN IMMEDIATE')
+                try:
+                    if db.execute('PRAGMA user_version').fetchone()[0] == 1:
+                        db.execute('ALTER TABLE mcp_servers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1))')
+                        db.execute('ALTER TABLE mcp_servers ADD COLUMN enabled_generation INTEGER NOT NULL DEFAULT 0')
+                        db.execute('PRAGMA user_version = 2')
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise MCPServiceError("mcp_registry_corrupt", "MCP storage integrity check failed.", 503)
             db.execute("SELECT server_id,profile_id,name,config_json,config_hash,created_at FROM mcp_servers LIMIT 0")
+            db.execute('SELECT enabled,enabled_generation FROM mcp_servers LIMIT 0')
             db.execute("SELECT server_id,tool_name,schema_hash,allowed,updated_at FROM mcp_tool_permissions LIMIT 0")
             if db.execute("PRAGMA foreign_key_check").fetchone():
                 raise MCPServiceError("mcp_registry_corrupt", "MCP storage integrity check failed.", 503)
@@ -98,6 +112,7 @@ class MCPRegistry:
         if row is None:
             raise MCPServiceError("mcp_server_not_found", "MCP server was not found.", 404)
         result = dict(row)
+        result['enabled'] = bool(result['enabled'])
         try:
             result["config"] = json.loads(result.pop("config_json"))
             if not isinstance(result["config"], dict):
@@ -125,6 +140,15 @@ class MCPRegistry:
         with self.connection(write=True) as db:
             if db.execute("DELETE FROM mcp_servers WHERE server_id=?", (server_id,)).rowcount != 1:
                 raise MCPServiceError("mcp_server_not_found", "MCP server was not found.", 404)
+
+    def set_enabled(self, server_id, enabled):
+        if type(enabled) is not bool:
+            raise MCPServiceError('mcp_invalid_input', 'enabled must be a boolean.')
+        with self.connection(write=True) as db:
+            self._decode(db.execute('SELECT * FROM mcp_servers WHERE server_id=?', (server_id,)).fetchone())
+            db.execute('UPDATE mcp_servers SET enabled=?,enabled_generation=enabled_generation+1 WHERE server_id=? AND enabled<>?',
+                       (int(enabled), server_id, int(enabled)))
+            return self._decode(db.execute('SELECT * FROM mcp_servers WHERE server_id=?', (server_id,)).fetchone())
 
     def permission(self, server_id, tool_name):
         with self.connection() as db:

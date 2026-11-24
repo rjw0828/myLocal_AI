@@ -95,6 +95,36 @@ test("actual main.js wiring preserves local headers and updates the configured m
   }
 });
 
+test("Agent reuses model API with an independent scope", async () => {
+  const f = setup(); f.control.scope = 'agent';
+  f.handle(async (path, options) => options.method === 'GET'
+    ? { models: ['a:latest','b:latest'], selected: 'a:latest', busy: false }
+    : { selected: JSON.parse(options.body).model });
+  await f.control.refresh(); f.select.value = 'b:latest'; await f.control.change();
+  assert.deepEqual(f.calls.map(c => c.path), ['/models?scope=agent', '/models/selection?scope=agent']);
+  assert.equal(f.control.selected, 'b:latest');
+});
+
+test("single Console selection also updates Agent model display", async () => {
+  const f = await fixture({ modelsEnabled: true, initialHandlers: {
+    '/models': () => packet({ models: ['qwen3.5:9b','new:8b'], selected: 'qwen3.5:9b', busy: false }),
+    '/models/selection': options => packet({ selected: JSON.parse(options.body).model }),
+  } });
+  f.nodes['refresh-models'].click(); await flush();
+  f.nodes['model-select'].value = 'new:8b';
+  f.nodes['model-select'].dispatchEvent({ type: 'change' }); await flush();
+  assert.equal(f.nodes['agent-model-name'].textContent, 'new:8b');
+  assert.equal(f.nodes['configured-model'].textContent, 'new:8b');
+  assert.equal(f.requests.filter(c => c.url.includes('scope=agent')).length, 0);
+});
+
+test("Fixed-model pilot hosts display model without a false save action", async () => {
+  const f = setup(); f.setData({ models: ['a:latest','b:latest'], selected: 'a:latest', busy: false, configurable: false });
+  await f.control.refresh(); assert.equal(f.select.disabled, true);
+  f.select.value = 'b:latest'; await f.control.change();
+  assert.equal(f.calls.length, 1); assert.equal(f.select.value, 'a:latest');
+});
+
 (async () => {
   let failures = 0;
   for (const { name, run } of tests) {

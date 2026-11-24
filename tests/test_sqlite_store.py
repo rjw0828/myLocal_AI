@@ -41,7 +41,19 @@ class SQLitePersistenceTests(unittest.TestCase):
         for item, language in ((a, "en"), (b, "ko")):
             self.assertEqual(self.chat(item["session_id"], language).status_code, 200)
         expected = [self.history(item["session_id"]).json for item in (a, b)]
+        # Isolated previous-version fixture with real stored History.
+        with self.store.connection(write=True) as db:
+            db.execute('ALTER TABLE sessions DROP COLUMN permission')
+            db.execute('ALTER TABLE sessions DROP COLUMN manual_generation')
+            db.execute('PRAGMA user_version = 1')
         restarted = create_app(self.path).test_client()
+        headers = {'X-Local-AI-Control':'web-console'}
+        path = '/sessions/'+a['session_id']+'/permission'
+        self.assertEqual(restarted.get(path, headers=headers).json['mode'], 'MANUAL')
+        self.assertEqual(restarted.put(path, headers=headers, json={'mode':'ALLOW_ALL'}).status_code, 200)
+        reopened = create_app(self.path).test_client()
+        self.assertEqual(reopened.get(path, headers=headers).json['mode'], 'ALLOW_ALL')
+        self.assertEqual(reopened.get('/sessions/'+b['session_id']+'/permission', headers=headers).json['mode'], 'MANUAL')
         self.assertEqual([self.history(item["session_id"], restarted).json for item in (a, b)], expected)
         self.assertEqual(len(restarted.get("/sessions").json["sessions"]), 2)
         restarted.post("/chat", json={"session_id": a["session_id"], "message": "next"})

@@ -37,7 +37,7 @@ function fixture(managed = false) {
   nodes["tool-chat-mode"].dataset.agentEnabled = String(managed);
   const requests = [], prompts = [], handlers = {}, stored = new Map(), timers = [], copied = [];
   const clipboard = { writeText: async (value) => { copied.push(value); } };
-  const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, status: { state: "RUNNING" } };
+  const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, enabled: false, status: { state: "RUNNING" } };
   const info = { name: "echo", description: "Returns text", input_schema: { type: "object", properties: { text: { type: "string" } } }, allowed: false };
   let registrations = [server], allowConfirmation = true;
   const fetch = async (url, options) => {
@@ -51,7 +51,7 @@ function fixture(managed = false) {
     if (url.endsWith("/connect")) { server.status.state = "RUNNING"; return packet({ result: { started: true } }); }
     if (url.endsWith("/stop")) { server.status.state = "STOPPED"; return packet({ server }); }
     if (options.method === "DELETE") { registrations = []; return packet({ status: "deleted" }); }
-    if (url.endsWith("/permission")) { info.allowed = data.allowed; return packet(data); }
+    if (url.endsWith("/enabled")) { server.enabled = data.enabled; info.allowed = data.enabled; return packet({ server }); }
     if (url.endsWith("/approve")) return packet({ approval_token: "one-use-token" });
     if (url.endsWith("/call")) return packet({ result: { content: [{ text: "echo result" }], is_error: false }, elapsed_seconds: .05 });
     if (url.includes("/operations/")) return packet({ operation: { state: "SUCCEEDED", result: { content: [{ text: "late answer" }] } } });
@@ -66,7 +66,7 @@ function fixture(managed = false) {
     const item = nodes[`mcp-${container}`].querySelectorAll("button").find((item) => item.textContent === label);
     assert.ok(item, `Missing button: ${label}; status=${nodes["mcp-message"].textContent}`); return item;
   };
-  const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); await button("tools", "Allow tool").fire(); await button("tools", "echo").fire(); nodes["mcp-raw-mode"].checked = true; await nodes["mcp-raw-mode"].fire("change"); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
+  const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); await button("servers", "Enabled OFF").fire(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); nodes["mcp-raw-mode"].checked = true; await nodes["mcp-raw-mode"].fire("change"); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
   return { ui, nodes, requests, prompts, handlers, server, info, stored, timers, clipboard, copied, button, ready, confirm: (value) => { allowConfirmation = value; } };
 }
 const tests = [];
@@ -104,22 +104,23 @@ test("Start/Stop/Delete respect lifecycle and delete cancellation", async () => 
   assert.equal(f.requests.filter((r) => r.options.method === "DELETE").length, 0);
   f.confirm(true); await f.button("servers", "Delete").fire(); assert.match(f.nodes["mcp-servers"].textContent, /No registered/);
 });
-test("Agent host routes lifecycle and permissions through MCPManagement", async () => {
+test("Agent host keeps lifecycle management and uses server Enabled", async () => {
   const f = fixture(true); await f.ui.open(); await f.button("servers", "Stop").fire();
   await f.button("servers", "Start").fire(); await f.button("servers", "Tools").fire();
-  await f.button("tools", "Allow tool").fire();
+  await f.button("servers", "Enabled OFF").fire(); await f.button("servers", "Tools").fire();
   assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/connect")));
+  assert.ok(f.prompts.every(p => !p.startsWith('Start and discover')));
   assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/stop")));
-  assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/tools/echo/permission")));
+  assert.ok(f.requests.some((r) => r.url.endsWith("/mcp/servers/s1/enabled")));
   assert.equal(calls(f, "/call").length, 0);
 });
-test("tools display live schema and default denial; grant/revoke are explicit", async () => {
+test("server Enabled controls all tools independently of connection state", async () => {
   const f = fixture(); await f.ui.open(); await f.button("servers", "Tools").fire();
-  for (const text of [/Returns text/, /properties/, /Blocked/]) assert.match(f.nodes["mcp-tools"].textContent, text);
+  for (const text of [/Returns text/, /properties/, /Disabled/]) assert.match(f.nodes["mcp-tools"].textContent, text);
   await f.button("tools", "echo").fire(); assert.equal(f.nodes["mcp-execute"].disabled, true);
-  await f.button("tools", "Allow tool").fire(); assert.equal(f.info.allowed, true);
+  await f.button("servers", "Enabled OFF").fire(); await f.button("servers", "Tools").fire(); assert.equal(f.info.allowed, true);
   await f.button("tools", "echo").fire();
-  await f.button("tools", "Block tool").fire(); assert.equal(f.info.allowed, false);
+  await f.button("servers", "Enabled ON").fire(); assert.equal(f.info.allowed, false);
 });
 test("confirmed manual call uses one approval and one call with identical arguments", async () => {
   const f = fixture(); await f.ready(); assert.equal(calls(f, "/call").length, 0); await f.nodes["mcp-execute"].fire();
@@ -324,12 +325,12 @@ test("tool name toggles details and selecting another closes the previous tool",
   await f.button("tools", "second").fire(); assert.equal(rows[0].querySelectorAll("div")[0].hidden, true);
   await f.button("tools", "second").fire(); assert.equal(f.nodes["mcp-call-panel"].hidden, true); assert.equal(f.nodes["mcp-execute"].disabled, true);
 });
-test("schema refresh invalidates previous form data and current permission display", async () => {
+test("schema refresh clears stale arguments without requiring per-tool reauthorization", async () => {
   const f = fixture(); await autoReady(f); field(f, "text").value = "old value";
   f.info.input_schema = { type: "object", properties: { timezone: { type: "string", default: "UTC" } } }; f.info.allowed = false;
   await f.ui.refresh(); assert.equal(f.nodes["mcp-auto-form"].children.length, 0); assert.equal(f.nodes["mcp-execute"].disabled, true);
   await f.button("servers", "Tools").fire(); await f.button("tools", "echo").fire();
-  assert.equal(field(f, "text"), undefined); assert.equal(field(f, "timezone").value, "UTC"); assert.equal(f.nodes["mcp-execute"].disabled, true);
+  assert.equal(field(f, "text"), undefined); assert.equal(field(f, "timezone").value, "UTC"); assert.equal(f.nodes["mcp-execute"].disabled, false);
   assert.equal(calls(f, "/approve").length, 0);
 });
 test("general and per-tool Help show safe descriptions, required inputs and examples", async () => {
