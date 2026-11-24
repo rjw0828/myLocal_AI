@@ -479,6 +479,12 @@ test("terminal invalid path failure stops polling and releases a known settled r
   assert.equal([...f.timers.values()].filter((t) => t.ms === 1000).length, 0);
 });
 
+test("disabled experimental engine keeps ordinary Chat without tracker requests", async () => {
+  const f = await fixture({ agentEnabled: false });
+  f.unlock(); f.input("message", "hello"); enter(f); await flush();
+  assert.equal(count(f, "/chat"), 1); assert.equal(count(f, "/tool-chat/jobs"), 0);
+});
+
 (async () => {
   let failures = 0;
   for (const { name, run } of tests) {

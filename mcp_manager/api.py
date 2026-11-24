@@ -10,9 +10,19 @@ from .service import MCPService
 
 
 def install_mcp(app, *, session_database_path, control_guard, database_path=None,
-                approved_configs=None, runtime_factory=None):
-    service = MCPService(session_database_path=session_database_path, database_path=database_path,
-                         approved_configs=approved_configs, runtime_factory=runtime_factory)
+                approved_configs=None, runtime_factory=None, existing_service=None):
+    if existing_service is not None:
+        from pathlib import Path
+        if (type(existing_service) is not MCPService or
+                existing_service.session_database_path != Path(session_database_path).resolve() or
+                existing_service.database_path == Path(session_database_path).resolve() or
+                database_path is not None and existing_service.database_path != Path(database_path).resolve() or
+                approved_configs is not None or runtime_factory is not None):
+            raise ValueError('Explicit shared service/path identity required')
+        service=existing_service
+    else:
+        service = MCPService(session_database_path=session_database_path, database_path=database_path,
+                             approved_configs=approved_configs, runtime_factory=runtime_factory)
     app.extensions["mcp_service"] = service
     api = Blueprint("mcp", __name__, url_prefix="/mcp")
 
@@ -43,8 +53,6 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
-
-    app.extensions["mcp_request_guard"] = local_request_only
 
     @api.errorhandler(MCPServiceError)
     def service_error(error):
@@ -158,5 +166,6 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
     def operation(server_id, operation_id):
         return jsonify(operation=service.operation(server_id, operation_id))
 
+    app.extensions['mcp_request_guard']=local_request_only
     app.register_blueprint(api)
     return service

@@ -46,7 +46,7 @@ function Get-InferredModules {
     $selected = New-Object System.Collections.Generic.List[string]
     foreach ($path in $Paths) {
         switch -Regex ($path) {
-            '^(mcp_manager/|tool_calling/|tests/test_(mcp_|tool_calling\.py|selection_policy\.py|tool_model_context\.py|tool_chat_backend\.py|tool_chat_(ui|console)\.js)|static/js/(mcp-(ui|schema)|tool-chat(-console)?)\.js|scripts/approve_mcp_profile\.py|start_app\.bat$)' { $selected.Add("mcp"); continue }
+            '^(mcp_manager/|agent_poc/|tests/test_(mcp_|agent_|approval_policy|execution_evidence|c5|tool_chat_(ui|console)\.js)|static/js/(agent-policy|mcp-(ui|schema)|tool-chat(-console)?)\.js|scripts/approve_mcp_profile\.py|start_app\.bat$)' { $selected.Add("mcp"); continue }
             '^(storage/|tests/test_sqlite_store\.py)' { $selected.Add("storage"); continue }
             '^tests/(test_sessions|test_delete_all)\.py' { $selected.Add("sessions"); continue }
             '^(voice/|tests/test_(stt|tts)_api\.py)' { $selected.Add("voice"); continue }
@@ -82,7 +82,7 @@ function Get-TestPlan {
         return [pscustomobject]@{
             DiscoverPython = $true
             Python = @()
-            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js", "tests/test_mcp_ui.js", "tests/test_tool_chat_ui.js", "tests/test_tool_chat_console.js")
+            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js", "tests/test_mcp_ui.js", "tests/test_tool_chat_ui.js", "tests/test_tool_chat_console.js", "tests/test_agent_policy_ui.js")
         }
     }
 
@@ -119,6 +119,7 @@ function Get-TestPlan {
                 }
             }
             "ui" {
+                Add-UniqueItem $javascript "tests/test_agent_policy_ui.js"
                 Add-UniqueItem $javascript "tests/test_tool_chat_console.js"
                 Add-UniqueItem $javascript "tests/test_tool_chat_ui.js"
                 Add-UniqueItem $javascript "tests/test_mcp_ui.js"
@@ -137,10 +138,14 @@ function Get-TestPlan {
             "mcp" {
                 Add-UniqueItem $javascript "tests/test_tool_chat_console.js"
                 Add-UniqueItem $javascript "tests/test_tool_chat_ui.js"
-                Add-UniqueItem $python "tests/test_tool_chat_backend.py"
-                Add-UniqueItem $python "tests/test_tool_calling.py"
-                Add-UniqueItem $python "tests/test_tool_model_context.py"
-                Add-UniqueItem $python "tests/test_selection_policy.py"
+                Add-UniqueItem $javascript "tests/test_agent_policy_ui.js"
+                Add-UniqueItem $python "tests/test_agent_web.py"
+                Add-UniqueItem $python "tests/test_approval_policy.py"
+                Add-UniqueItem $python "tests/test_mcp_management.py"
+                Add-UniqueItem $python "tests/test_c5d.py"
+                Add-UniqueItem $python "tests/test_c5d_attestation.py"
+                Add-UniqueItem $python "tests/test_c5e_evidence.py"
+                Add-UniqueItem $python "tests/test_execution_evidence.py"
                 Add-UniqueItem $python "tests/test_mcp_profile_requests.py"
                 Add-UniqueItem $javascript "tests/test_mcp_ui.js"
                 Add-UniqueItem $python "tests/test_mcp_startup.py"

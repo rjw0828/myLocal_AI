@@ -24,8 +24,15 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
   const clearPending = (id) => { pending.delete(id); savePending(); };
   const make = (tag, text = "") => { const item = document.createElement(tag); item.textContent = text; return item; };
   const base = (id) => `/mcp/servers/${encodeURIComponent(id)}`;
+  const managed = node("tool-chat-mode")?.dataset.agentEnabled === "true";
+  const management = (id) => `/tool-chat/management/servers/${encodeURIComponent(id)}`;
   const toolPath = (id, name) => `${base(id)}/tools/${encodeURIComponent(name)}`;
   const state = (server) => server.status?.state || "UNKNOWN";
+  const readToolArguments = () => {
+    if (!ui["raw-mode"].checked && argumentForm?.supported) return argumentForm.read();
+    try { return JSON.parse(ui.arguments.value); }
+    catch (_) { throw new Error("Arguments must be valid JSON."); }
+  };
   const currentServer = () => servers.find((server) => server.server_id === selected);
   const announce = (level, message) => {
     ui.message.textContent = message;
@@ -105,18 +112,20 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       row.append(make("td", server.name), make("td", `Approved profile: ${server.profile_id}`), make("td", server.transport),
         make("td", `${state(server)}${pending.has(id) ? " · completion unconfirmed" : ""}${server.execution_approved ? "" : " · profile not approved"}`));
       button(actions, "Start", async () => {
+        if (managed && !confirm(`Start and discover '${server.name}'? This launches the reviewed server but calls no Tool.`)) return;
         announce("RUNNING", "Starting selected MCP server.");
-        await request(`${base(id)}/start`, "POST", {}); await loadServers(); announce("SUCCESS", "MCP server started.");
+        await request(managed ? `${management(id)}/connect` : `${base(id)}/start`, "POST", managed ? { confirmed: true } : {});
+        await loadServers(); announce("SUCCESS", "MCP server started and discovery completed.");
       }, state(server) !== "STOPPED" || !server.execution_approved || pending.has(id));
       button(actions, "Stop", async () => {
         if (!confirm(`Stop MCP server '${server.name}'? In-flight tool side effects cannot be undone.`)) return;
-        await request(`${base(id)}/stop`, "POST", {}); clearPending(id);
+        await request(managed ? `${management(id)}/stop` : `${base(id)}/stop`, "POST", {}); clearPending(id);
         if (selected === id) clearTools(); await loadServers(); announce("SUCCESS", "MCP server stopped.");
       }, state(server) === "STOPPED" && !pending.has(id));
       button(actions, "Tools", async () => selectServer(id), state(server) !== "RUNNING" || !server.execution_approved);
       button(actions, "Delete", async () => {
         if (!confirm(`Delete MCP registration '${server.name}' and its tool permissions?`)) return;
-        await request(base(id), "DELETE"); clearPending(id);
+        await request(managed ? management(id) : base(id), "DELETE"); clearPending(id);
         if (selected === id) { selected = null; generation += 1; clearTools(); }
         await loadServers(); announce("SUCCESS", "MCP registration deleted.");
       }, state(server) !== "STOPPED" || pending.has(id));
@@ -158,6 +167,9 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
             : "This schema needs Advanced Raw JSON. Review the schema and help before running.";
           ui["result-summary"].textContent = `Selected ${info.name}. ${info.allowed ? "Review arguments before approval." : "Allow this tool before execution."}`;
           ui.result.textContent = ""; ui["result-details"].open = false;
+          if (typeof CustomEvent === "function" && document.dispatchEvent) document.dispatchEvent(
+            new CustomEvent("local-ai-mcp-tool-selected", { detail: { serverId: selected,
+              tool: info.name, readArguments: readToolArguments } }));
         }
         for (const row of ui.tools.querySelectorAll("article")) {
           const active = row.dataset.tool === tool?.name;
@@ -173,7 +185,8 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       button(detail, info.allowed ? "Block tool" : "Allow tool", async () => {
         const id = selected, version = generation;
         if (!confirm(`${info.allowed ? "Block" : "Allow"} tool '${info.name}' on '${currentServer().name}'? Each call still requires approval.`)) return;
-        await request(`${toolPath(id, info.name)}/permission`, "PUT", { allowed: !info.allowed });
+        await request(managed ? `${management(id)}/tools/${encodeURIComponent(info.name)}/permission`
+          : `${toolPath(id, info.name)}/permission`, "PUT", { allowed: !info.allowed });
         if (visible && selected === id && generation === version) await selectServer(id);
         announce("SUCCESS", "MCP tool permission updated.");
       });
@@ -187,6 +200,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     const data = await request(`${base(id)}/tools`);
     if (!visible || selected !== id || generation !== version) return;
     if (!Array.isArray(data.tools)) throw new Error("Invalid MCP tool list.");
+    if (typeof CustomEvent === "function" && document.dispatchEvent) document.dispatchEvent(new CustomEvent("local-ai-mcp-selected", { detail: { serverId: id } }));
     tools = data.tools; ui["tools-hint"].textContent = `Server: ${currentServer()?.name || id}`;
     renderTools(); announce("SUCCESS", "MCP tool discovery completed.");
   };
@@ -291,8 +305,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     const server = currentServer(), selectedTool = tool, version = generation;
     if (!visible || !server || state(server) !== "RUNNING" || !selectedTool?.allowed || pending.has(selected)) throw new Error("Discover an allowed tool on a running server; unconfirmed work requires result verification or Stop.");
     let args;
-    if (!ui["raw-mode"].checked && argumentForm?.supported) args = argumentForm.read();
-    else { try { args = JSON.parse(ui.arguments.value); } catch (_) { throw new Error("Arguments must be valid JSON."); } }
+    args = readToolArguments();
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Arguments must be a JSON object.");
     const finiteJSON = (value) => {
       if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Arguments must contain only finite numbers.");

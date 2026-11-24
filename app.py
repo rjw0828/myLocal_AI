@@ -79,7 +79,7 @@ class SessionDeleting(RuntimeError):
 
 
 def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_configs=None,
-               mcp_runtime_factory=None, tool_bindings_factory=None, tool_limits=None) -> Flask:
+               mcp_runtime_factory=None, mcp_existing_service=None, agent_backend_factory=None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
@@ -341,7 +341,8 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
 
     @app.get("/")
     def index() -> str:
-        return render_template("index.html")
+        return render_template("index.html", agent_enabled=agent_backend_factory is not None,
+                               agent_model=getattr(app.extensions.get('tool_chat'),'model_name',None))
 
     @app.get("/health")
     def health() -> tuple[Response, int]:
@@ -645,10 +646,10 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     from mcp_manager.api import install_mcp
     mcp_service = install_mcp(app, session_database_path=store.path, control_guard=require_local_control_header,
                 database_path=mcp_database_path, approved_configs=mcp_approved_configs,
-                runtime_factory=mcp_runtime_factory)
-    from tool_calling.backend import ToolChatBackend
-    from tool_calling.api import install_tool_chat
-    from tool_calling.models import ToolChatError
+                runtime_factory=mcp_runtime_factory, existing_service=mcp_existing_service)
+    from agent_poc.web_contract import DisabledBackend
+    from agent_poc.web_api import install_tool_chat
+    from agent_poc.web_contract import ToolChatError
 
     def prepare_tool_chat(session_id, message, language, reservations):
         session, _created = acquire_session(session_id, create=False)
@@ -666,10 +667,11 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
             if row is None:
                 raise ToolChatError("session_not_found")
             prompt = RESPONSE_LANGUAGE_PROMPTS[language] if language else row["system_prompt"] or ai_controller.SYSTEM_PROMPT
-            content = message + ("\n\n[Response requirements]\n" + RESPONSE_LANGUAGE_TURN_INSTRUCTIONS[language] if language else "")
             history = [{"role": "system", "content": prompt}]
             history.extend({"role": item["role"], "content": item["content"]} for item in row["messages"])
-            history.append({"role": "user", "content": content})
+            # Tool selection sees the original question; language policy stays
+            # in the existing system prompt, not appended to user content.
+            history.append({"role": "user", "content": message})
             first = message.strip().replace("\r", " ").replace("\n", " ")
             title = row["title"] if row["titled"] else first[:SESSION_TITLE_LENGTH] + ("..." if len(first) > SESSION_TITLE_LENGTH else "")
             return {"session_id": session_id, "revision": row["revision"], "reservation_owner": owner,
@@ -698,11 +700,15 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         finally:
             release_session(session_id, session, committed=True)
 
-    tool_backend = ToolChatBackend(mcp_service, session_revision=store.revision, prepare=prepare_tool_chat,
-                                   commit=commit_tool_chat, limits=tool_limits,
-                                   bindings_factory=(lambda: tool_bindings_factory(mcp_service)) if tool_bindings_factory else None)
+    def tool_session_revision(session_id):
+        row = store.load(session_id)
+        return row['revision'] if row is not None else None
+
+    tool_backend = (agent_backend_factory(mcp_service, tool_session_revision, prepare_tool_chat, commit_tool_chat)
+                    if agent_backend_factory else DisabledBackend())
     app.extensions["tool_chat"] = tool_backend
-    install_tool_chat(app, tool_backend, guard=app.extensions["mcp_request_guard"])
+    if agent_backend_factory:
+        install_tool_chat(app, tool_backend, guard=app.extensions["mcp_request_guard"])
     return app
 
 

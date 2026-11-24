@@ -1,12 +1,14 @@
 """Registry/runtime coordination and explicit, one-use manual-call approval."""
 from collections import OrderedDict
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict
 import json
 import os
 from pathlib import Path
 import secrets
 from threading import Lock, RLock
+from types import SimpleNamespace
 import time
 
 from jsonschema import Draft202012Validator, ValidationError
@@ -91,10 +93,10 @@ class MCPService:
                     configs = []
                     for item in entries:
                         if (not isinstance(item, dict) or not {"profile_id", "executable"} <= set(item)
-                                or set(item) - {"profile_id", "executable", "args", "cwd"}):
+                                or set(item) - {"profile_id", "executable", "args", "cwd", "env"}):
                             raise ValueError()
                         configs.append(ServerConfig(item["profile_id"], item["executable"],
-                                                    item.get("args", ()), item.get("cwd")))
+                                                    item.get("args", ()), item.get("cwd"),item.get('env',())))
                 profiles = {}
                 for config in configs:
                     if not isinstance(config, ServerConfig) or config.server_id in profiles:
@@ -104,6 +106,26 @@ class MCPService:
                 raise MCPServiceError("mcp_approval_config_invalid", "Local MCP execution approvals are invalid.", 503) from None
             self._profiles = profiles
             return profiles
+
+    def replace_local_profiles(self, configs):
+        """Trusted local-owner entry point; deliberately not exposed over HTTP.
+
+        Replacing a profile never updates a registration's pinned config hash.
+        Existing tokens are discarded; active registrations must remain exact.
+        """
+        configs = tuple(configs)
+        if any(type(c) is not ServerConfig for c in configs) or len({c.server_id for c in configs}) != len(configs):
+            raise ValueError('Unique validated local profiles required')
+        profiles = {c.server_id:c for c in configs}
+        with self._lock:
+            self._open()
+            for row in self.registry.list_servers():
+                if self._status(row['server_id']).state != ServerState.STOPPED:
+                    candidate = profiles.get(row['profile_id'])
+                    if candidate is None or fingerprint(config_data(candidate)) != row['config_hash']:
+                        raise ValueError('Stop server before replacing its profile')
+            self._approved_configs, self._profiles = configs, profiles
+            self._tokens.clear()
 
     def _approved(self, row):
         profile = self.profiles().get(row["profile_id"])
@@ -165,7 +187,7 @@ class MCPService:
         with self._lock:
             self._profiles = None  # Explicitly reload only owner-written approvals; never trust a web proposal.
             profile = self.profiles().get(record["profile_id"])
-            approved = profile is not None and config_data(profile) == {key: record[key] for key in ("executable", "args", "cwd")}
+            approved = profile is not None and config_data(profile) == {key: record[key] for key in ("executable", "args", "cwd", "env") if key in record}
         return requests.view(record, approved)
 
     @contextmanager
@@ -197,7 +219,7 @@ class MCPService:
             self._require_approved(row)
             profile = self.profiles()[row["profile_id"]]
             try:
-                config = ServerConfig(server_id, profile.executable, profile.args, profile.cwd)
+                config = ServerConfig(server_id, profile.executable, profile.args, profile.cwd,profile.env)
             except (ValueError, OSError):
                 raise MCPServiceError("mcp_execution_unavailable", "Approved local executable is unavailable.", 503) from None
             with self._lock:
@@ -246,21 +268,25 @@ class MCPService:
                 self._bindings.pop(server_id, None)
                 self._gates.pop(server_id, None)
 
-    def _tools(self, row, timeout=None):
+    def _tools(self, row):
         self._require_approved(row)
         if row["server_id"] not in self._registered:
             raise MCPRuntimeError("mcp_not_ready", "MCP server is stopped.")
-        return self._runtime.list_tools(row["server_id"], refresh=True, timeout=timeout)
+        return self._runtime.list_tools(row["server_id"], refresh=True)
+
+    @staticmethod
+    def _legacy_tool(tool):
+        return deepcopy({key: getattr(tool, key) for key in ("name", "description", "input_schema")})
 
     @staticmethod
     def _schema_hash(tool):
         try:
-            return fingerprint(asdict(tool))
+            return fingerprint(MCPService._legacy_tool(tool))
         except (ValueError, TypeError, RecursionError):
             raise MCPServiceError("mcp_tool_schema_invalid", "MCP tool schema is invalid.", 502) from None
 
-    def _tool(self, row, name, timeout=None):
-        for tool in self._tools(row, timeout=timeout):
+    def _tool(self, row, name):
+        for tool in self._tools(row):
             if tool.name == name:
                 return tool
         raise MCPServiceError("mcp_tool_not_found", "MCP tool was not found.", 404)
@@ -269,27 +295,62 @@ class MCPService:
         grant = self.registry.permission(server_id, name)
         return bool(grant and grant["allowed"] and grant["schema_hash"] == schema_hash)
 
-    def list_tools(self, server_id, *, timeout=None):
+    def list_tools(self, server_id):
         with self._guard(server_id) as row:
-            return [asdict(tool) | {"schema_hash": self._schema_hash(tool),
+            return [self._legacy_tool(tool) | {"schema_hash": self._schema_hash(tool),
                     "allowed": self._permission(server_id, tool.name, self._schema_hash(tool))}
-                    for tool in self._tools(row, timeout=timeout)]
+                    for tool in self._tools(row)]
 
     def set_permission(self, server_id, name, allowed):
         with self._guard(server_id) as row:
             schema_hash = self._schema_hash(self._tool(row, name)) if allowed else ""
             self.registry.set_permission(server_id, name, schema_hash, allowed)
-            with self._lock:
-                key = (server_id, name)
-                self._permission_generations[key] = self._permission_generations.get(key, 0) + 1
+            key = (server_id, name)
+            self._permission_generations[key] = self._permission_generations.get(key, 0) + 1
             self._clear_tokens(server_id, name)
             return {"tool_name": name, "allowed": allowed, "schema_hash": schema_hash}
 
     def permissions(self, server_id):
         return [row | {"allowed": bool(row["allowed"])} for row in self.registry.list_permissions(server_id)]
 
-    def _authorized_tool(self, row, name, timeout=None):
-        tool = self._tool(row, name, timeout=timeout)
+    def catalog_tools(self, server_id):
+        """Read-only Agent catalog, separate from the unchanged manual REST view."""
+        with self._guard(server_id) as row:
+            tools = self._tools(row)
+            return [self._catalog_descriptor(row, tool) for tool in tools]
+
+    def execution_context(self, server_id):
+        """Trusted local metadata only; never returned by the public REST API."""
+        row=self.registry.get(server_id)
+        self.refresh_profiles();self._require_approved(row)
+        if self._status(server_id).state!=ServerState.RUNNING:
+            raise MCPRuntimeError('mcp_not_ready','Server is not running.')
+        runtime=self._runtime
+        owner=getattr(runtime,'manager',runtime)
+        return {'config_hash':row['config_hash'],'config':json.loads(canonical_json(row['config'])),
+            'connection_generation':runtime.connection_generation(server_id),
+            'connection_info':owner.connection_info(server_id) if hasattr(owner,'connection_info') else None}
+
+    def _catalog_descriptor(self, row, tool, *, connection_generation=None):
+        server_id = row["server_id"]
+        return asdict(tool) | {
+            "allowed": self._permission(server_id, tool.name, self._schema_hash(tool)),
+            "source": {"config_hash": row["config_hash"],
+                       "connection_generation": (self._runtime.connection_generation(server_id)
+                                                 if connection_generation is None else connection_generation),
+                       "permission_generation": self._permission_generations.get((server_id, tool.name), 0)},
+        }
+
+    def validate_catalog_arguments(self, server_id, name, arguments, expected_fingerprint):
+        """Validate current mapping/permission/arguments without approving or executing."""
+        rows = self.catalog_tools(server_id)
+        tool = next((item for item in rows if item["name"] == name), None)
+        if tool is None or not tool["allowed"] or fingerprint(tool) != expected_fingerprint:
+            raise MCPServiceError("mcp_catalog_stale", "MCP catalog changed; rediscovery is required.", 409)
+        return self._arguments(SimpleNamespace(input_schema=tool["input_schema"]), arguments)
+
+    def _authorized_tool(self, row, name):
+        tool = self._tool(row, name)
         schema_hash = self._schema_hash(tool)
         if not self._permission(row["server_id"], name, schema_hash):
             raise MCPServiceError("mcp_tool_permission_required", "This tool/schema has not been permitted.", 403)
@@ -361,50 +422,26 @@ class MCPService:
             while len(records) > 32:
                 records.popitem(last=False)
 
-    def _call_context(self, row, tool, schema_hash):
-        """Internal Python adapter data, never added to public HTTP responses."""
-        server_id = row["server_id"]
-        if self._status(server_id).state != ServerState.RUNNING:
-            raise MCPRuntimeError("mcp_not_ready", "MCP server is not running.")
-        with self._lock:
-            permission_generation = self._permission_generations.get((server_id, tool.name), 0)
-        return {"server_id": server_id, "config_hash": row["config_hash"],
-                "config": json.loads(canonical_json(row["config"])),
-                "connection_generation": self._runtime.connection_generation(server_id),
-                "connection_info": self._runtime.connection_info(server_id),
-                "permission_generation": permission_generation,
-                "schema_hash": schema_hash, "tool": asdict(tool)}
-
-    def inspect_tool(self, server_id, name, *, timeout=None):
-        with self._guard(server_id) as row:
-            self.refresh_profiles()
-            tool, schema_hash = self._authorized_tool(row, name, timeout=timeout)
-            return self._call_context(row, tool, schema_hash)
-
-    def inspect_server(self, server_id):
-        """Trusted backend launch metadata, not a public management response."""
-        with self._guard(server_id) as row:
-            self.refresh_profiles()
-            self._require_approved(row)
-            if self._status(server_id).state != ServerState.RUNNING:
-                raise MCPRuntimeError("mcp_not_ready", "MCP server is not running.")
-            return {"server_id": server_id, "config_hash": row["config_hash"],
-                    "config": json.loads(canonical_json(row["config"])),
-                    "connection_generation": self._runtime.connection_generation(server_id),
-                    "connection_info": self._runtime.connection_info(server_id)}
-
     def revoke_call_approval(self, token):
         with self._lock:
             self._tokens.pop(fingerprint(token), None)
 
-    def call_tool(self, server_id, name, arguments, token, *, before_execute=None):
+    def call_tool(self, server_id, name, arguments, token, *, operation_id=None, before_execute=None):
+        if operation_id is not None or before_execute is not None:
+            return self._call_tool_once(server_id, name, arguments, token, operation_id, before_execute)
+        from agent_poc.owner_runtime import OwnerFakeRuntime
+        from agent_poc.live_transport import ReviewedStdioRuntime
+        if type(self._runtime) in (OwnerFakeRuntime, ReviewedStdioRuntime):
+            # The existing manual UI already requires its explicit one-use
+            # MCPService token. Preserve that contract while using the reviewed
+            # owner's single-dispatch path; no Agent proposal/auto grant is minted.
+            with self._guard(server_id):
+                tool,_schema_hash=self._authorized_tool(self.registry.get(server_id),name)
+                arguments=self._arguments(tool,arguments)
+            return self._call_tool_once(server_id,name,arguments,token,secrets.token_hex(16),lambda context,args:None)
         with self._guard(server_id) as row:
-            if before_execute is not None:
-                self.refresh_profiles()
             tool, schema_hash = self._authorized_tool(row, name)
             arguments = self._arguments(tool, arguments)
-            if before_execute is not None:
-                before_execute(self._call_context(row, tool, schema_hash), arguments)
             self._consume(server_id, name, schema_hash, arguments, token)
             try:
                 result = self._runtime.call_tool(server_id, name, arguments)
@@ -415,6 +452,60 @@ class MCPService:
             outcome = self._runtime.get_status(server_id).last_operation
             self._bind(server_id, outcome.operation_id, name, schema_hash)
             return {"server_id": server_id, "operation_id": outcome.operation_id,
+                    "result": asdict(result), "elapsed_seconds": outcome.elapsed_seconds}
+
+    def _call_tool_once(self, server_id, name, arguments, token, operation_id, before_execute):
+        """C-3B-1 guarded admission; only the exact in-memory Fake Runtime.
+
+        The ordinary manual path is unchanged. Never enable an arbitrary runtime
+        here just because it implements a similarly named method.
+        """
+        from agent_poc.fake_runtime import FakeRuntime
+        from agent_poc.owner_runtime import OwnerFakeRuntime
+        from agent_poc.live_transport import ReviewedStdioRuntime
+        from .manager import MCPManager
+        if (type(self._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager) or not isinstance(operation_id, str)
+                or not operation_id or not callable(before_execute)):
+            raise MCPServiceError("mcp_execution_bridge_disabled", "Real MCP execution is disabled for this bridge.", 403)
+        with self._guard(server_id):
+            arguments = json.loads(canonical_json(arguments))
+            binding = None
+            approval_error = None
+
+            def authorize_send(owner_tool=None, owner_generation=None):
+                nonlocal binding, approval_error
+                # Fake Runtime owns its connection/schema lock here; this
+                # service guard serializes Allow/Block and other service actions.
+                row = self.registry.get(server_id)
+                self.refresh_profiles()
+                if owner_tool is None:
+                    tool, schema_hash = self._authorized_tool(row, name)
+                else:
+                    # Owner provides fresh discovery under its connection lock;
+                    # never synchronously queue Discovery from that same loop.
+                    self._require_approved(row)
+                    tool, schema_hash = owner_tool, self._schema_hash(owner_tool)
+                    if tool.name != name or not self._permission(server_id, name, schema_hash):
+                        raise MCPServiceError("mcp_tool_permission_required", "Latest tool permission is required.", 403)
+                args = self._arguments(tool, arguments)
+                try:self._consume(server_id, name, schema_hash, args, token)
+                except MCPServiceError as error:
+                    approval_error=error
+                    raise
+                before_execute(self._catalog_descriptor(row, tool, connection_generation=owner_generation), args)
+                binding = (name, schema_hash)
+
+            try:
+                result = self._runtime.call_tool_once(server_id, name, arguments,
+                    operation_id=operation_id, before_send=authorize_send)
+            except Exception as error:
+                if binding is not None:
+                    self._bind(server_id, operation_id, *binding)
+                if approval_error is not None:raise approval_error
+                raise
+            self._bind(server_id, operation_id, *binding)
+            outcome = self._runtime.get_operation(server_id, operation_id)
+            return {"server_id": server_id, "operation_id": operation_id,
                     "result": asdict(result), "elapsed_seconds": outcome.elapsed_seconds}
 
     def operation(self, server_id, operation_id):

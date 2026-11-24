@@ -22,7 +22,9 @@ def fingerprint(value):
 
 
 def config_data(config):
-    return {"executable": config.executable, "args": list(config.args), "cwd": config.cwd}
+    result={"executable": config.executable, "args": list(config.args), "cwd": config.cwd}
+    if config.env:result['env']=dict(config.env)
+    return result
 
 
 class MCPRegistry:

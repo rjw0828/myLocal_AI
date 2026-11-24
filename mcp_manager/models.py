@@ -1,5 +1,6 @@
 """Public, SDK-independent types for the optional MCP core runtime."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -41,14 +42,16 @@ class ServerConfig:
     """An explicitly approved in-memory stdio registration, not a shell command.
 
     The registering Python caller is trusted to approve the executable AND its
-    arguments. No process starts on construction. Environment interpolation,
-    shell wrappers, PATH lookup, and implicit package downloads are unsupported.
+    arguments. No process starts on construction. Literal environment entries
+    are optional; interpolation, shell wrappers, PATH lookup, and implicit
+    package downloads are unsupported.
     """
 
     server_id: str
     executable: str
     args: tuple[str, ...] = ()
     cwd: str | None = None
+    env: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
     def __post_init__(self):
         if (not isinstance(self.server_id, str) or not self.server_id.strip()
@@ -73,6 +76,19 @@ class ServerConfig:
         object.__setattr__(self, "executable", str(executable))
         object.__setattr__(self, "args", tuple(self.args))
         object.__setattr__(self, "cwd", str(directory.resolve()))
+        if not isinstance(self.env,(dict,tuple,list)):raise ValueError('Environment must be a map or pairs')
+        items=list(self.env.items()) if isinstance(self.env,dict) else list(self.env)
+        result={}
+        for item in items:
+            if not isinstance(item,(tuple,list)) or len(item)!=2:raise ValueError('Environment requires key/value pairs')
+            key,value=item
+            if (not isinstance(key,str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key)
+                    or not isinstance(value,str) or '\x00' in value or len(value)>16384
+                    or key.upper() in result):
+                raise ValueError('Invalid or duplicate environment setting')
+            result[key.upper()]=value
+        if sum(len(k)+len(v) for k,v in result.items())>65536:raise ValueError('Environment exceeds limit')
+        object.__setattr__(self,'env',tuple(sorted(result.items())))
 
 
 @dataclass(frozen=True)
@@ -80,6 +96,8 @@ class ToolInfo:
     name: str
     description: str | None
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any] | None = None
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

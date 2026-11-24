@@ -27,9 +27,9 @@ def read_manifest(path):
     seen = set()
     for item in document["profiles"]:
         if (not isinstance(item, dict) or not {"profile_id", "executable"} <= set(item)
-                or set(item) - {"profile_id", "executable", "args", "cwd"}):
+                or set(item) - {"profile_id", "executable", "args", "cwd", "env"}):
             raise ValueError("Invalid approval profile")
-        config = ServerConfig(item["profile_id"], item["executable"], item.get("args", ()), item.get("cwd"))
+        config = ServerConfig(item["profile_id"], item["executable"], item.get("args", ()), item.get("cwd"),item.get('env',()))
         if config.server_id in seen:
             raise ValueError("Duplicate approval profile")
         seen.add(config.server_id)
@@ -48,7 +48,7 @@ class ProfileRequests:
             raise MCPServiceError("mcp_profile_request_invalid", "Invalid profile request.")
         return path
 
-    def create(self, name, transport, executable, arguments):
+    def create(self, name, transport, executable, arguments, *, cwd=None, env=()):
         if transport != "stdio":
             raise MCPServiceError("mcp_invalid_transport", "Only local stdio profiles are supported.")
         if not isinstance(arguments, list):
@@ -61,7 +61,7 @@ class ProfileRequests:
                                   ": remove leading/trailing whitespace. Internal spaces are allowed; values are not changed automatically.")
         request_id = uuid4().hex
         try:
-            config = ServerConfig("local-" + request_id, executable, arguments)
+            config = ServerConfig("local-" + request_id, executable, arguments,cwd,env)
             record = {"request_id": request_id, "profile_id": config.server_id, "name": name,
                       "transport": "stdio", **config_data(config), "created_at": time.time()}
             encoded = json.dumps(record, ensure_ascii=True, allow_nan=False)
@@ -88,15 +88,15 @@ class ProfileRequests:
                 raise ValueError()
             record = json.loads(path.read_text(encoding="utf-8"))
             expected = {"request_id", "profile_id", "name", "transport", "executable", "args", "cwd", "created_at"}
-            if (not isinstance(record, dict) or set(record) != expected or record["request_id"] != request_id
+            if (not isinstance(record, dict) or set(record)-{'env'} != expected or record["request_id"] != request_id
                     or record["profile_id"] != "local-" + request_id or record["transport"] != "stdio"
                     or not isinstance(record["name"], str) or not record["name"].strip() or len(record["name"]) > 128
                     or not isinstance(record["created_at"], (int, float))):
                 raise ValueError()
             if not 0 <= time.time() - record["created_at"] < 24 * 3600:
                 raise MCPServiceError("mcp_profile_request_expired", "Profile request expired. Cancel it and submit again.", 409)
-            config = ServerConfig(record["profile_id"], record["executable"], record["args"], record["cwd"])
-            if config_data(config) != {key: record[key] for key in ("executable", "args", "cwd")}:
+            config = ServerConfig(record["profile_id"], record["executable"], record["args"], record["cwd"],record.get('env',()))
+            if config_data(config) != {key: record[key] for key in ("executable", "args", "cwd", "env") if key in record}:
                 raise ValueError()
             return record
         except (OSError, ValueError, TypeError, KeyError):
@@ -142,7 +142,7 @@ def approve_request(requests, request_id, confirm):
         if (requests.manifest.read_bytes() if requests.manifest.exists() else None) != original:
             raise ValueError("Approval file changed during review; retry")
         existing = next((item for item in document["profiles"] if item["profile_id"] == record["profile_id"]), None)
-        entry = {key: record[key] for key in ("profile_id", "executable", "args", "cwd")}
+        entry = {key: record[key] for key in ("profile_id", "executable", "args", "cwd", "env") if key in record}
         if existing is not None:
             if existing != entry:
                 raise ValueError("Existing profile differs; refusing to overwrite it")

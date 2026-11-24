@@ -69,7 +69,7 @@ function packet(data, status = 200) {
   };
 }
 async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [], savedDeleteAll = false,
-  savedStorage = null, initialHandlers = {} } = {}) {
+  savedStorage = null, initialHandlers = {}, agentEnabled = true } = {}) {
   const root = path.resolve(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
   const nodes = {};
@@ -81,6 +81,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
     if (pressed) node.setAttribute("aria-pressed", pressed[1]);
     nodes[match[2]] = node;
   }
+  nodes["tool-chat-mode"].dataset.agentEnabled = agentEnabled ? "true" : "false";
   nodes["session-id"].value = "";
   nodes["stt-language"].value = "auto"; nodes["tts-language"].value = "ko";
   nodes["session-popup"].append(nodes["delete-all-sessions"], nodes["session-popup-items"]);

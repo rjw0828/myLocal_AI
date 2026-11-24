@@ -647,7 +647,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateInputState();
     appendLog("RUNNING", "DELETE /sessions/{id}", `Deleting Session ${detail.number}; waiting for observed work to finish.`);
     try {
-      await toolChat.prepareMutation([sessionId]);
+      if (toolChat) await toolChat.prepareMutation([sessionId]);
       await chatGuard.beforeReset(sessionId);
       const packet = await chatGuard.run(sessionId, async (confirmCompletion) => {
         const response = await requestJson(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
@@ -707,7 +707,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (["requesting", "recording", "transcribing"].includes(voiceState)) discardRecording();
       stopTts("Delete All approved. Playback stopped.");
       appendLog("RUNNING", "DELETE /sessions", "Waiting for observed Chat/Reset operations before Delete All.");
-      await toolChat.prepareMutation();
+      if (toolChat) await toolChat.prepareMutation();
       // Do not abort Chat transport: observe its completion, then delete.
       // An uncertain Chat prevents the bulk request altogether.
       await Promise.all([...affected].map((id) => chatGuard.beforeReset(id)));
@@ -1270,7 +1270,7 @@ document.addEventListener("DOMContentLoaded", () => {
     appendLog("RUNNING", apiLabel, "Waiting for any observed Chat to finish before Reset.");
     setRequestRunning(true);
     try {
-      await toolChat.prepareMutation([sessionId]);
+      if (toolChat) await toolChat.prepareMutation([sessionId]);
       await chatGuard.beforeReset(sessionId);
       const packet = await chatGuard.run(sessionId, async (confirmCompletion) => {
         const resetPacket = await requestJson(`/sessions/${encodeURIComponent(sessionId)}/reset`, { method: "POST" });
@@ -1581,6 +1581,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // MCP-5D-3: explicit opt-in; ordinary /chat and Voice retain their own flows.
+  if ($("#tool-chat-mode")?.dataset?.agentEnabled === "true") {
   const toolTracker = new LocalAIToolChat.ToolChatTracker({
     client: new LocalAIToolChat.ToolChatClient({ fetch: window.fetch.bind(window),
       setTimer: window.setTimeout.bind(window), clearTimer: window.clearTimeout.bind(window) }),
@@ -1609,13 +1610,14 @@ document.addEventListener("DOMContentLoaded", () => {
     },
     log: (level, text) => appendLog(level, "TOOL CHAT", text), update: updateInputState,
   });
+  }
   appendLog("READY", "SYSTEM", "Local controller console initialized. Unlock D to send Chat; session controls are in E.");
   if (deleteAllUncertain) appendLog("ERROR", "SESSION STATE", "Previous Delete All completion is unknown. Session changes remain blocked; verified server resynchronization is required.");
   renderConversation(currentConversationSession);
   updateInputState();
-  initializeSessions().then(() => toolChat.restoreKnownJobs());
+  initializeSessions().then(() => toolChat?.restoreKnownJobs());
   window.addEventListener("beforeunload", () => {
-    toolChat.dispose();
+    toolChat?.dispose();
     voiceTurns.cancel("Page closed.");
     stopTts("Page closed. TTS playback was stopped.", false);
     clearRecordingTimers();

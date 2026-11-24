@@ -21,7 +21,36 @@ from .models import (
     MCPRuntimeError, OperationOutcome, OperationState, ServerConfig, ServerState,
     ServerStatus, ToolCallResult, ToolInfo,
 )
-from .launch import filesystem_artifact
+from .registry import config_data, fingerprint
+
+
+async def discover_tools(client, *, refresh=False, max_pages=64, max_tools=4096):
+    """Bounded tools/list traversal using the SDK public cursor API."""
+    cursor, seen, names, tools = None, set(), set(), []
+    for _ in range(max_pages):
+        kwargs = {"cache_mode": "refresh"} if refresh else {}
+        if cursor is not None:
+            kwargs["cursor"] = cursor
+        page = await client.list_tools(**kwargs)
+        for tool in page.tools:
+            if not isinstance(tool.name, str) or not tool.name or tool.name in names:
+                raise ValueError("Invalid or duplicate MCP tool name")
+            names.add(tool.name)
+            annotations = getattr(tool, "annotations", None)
+            if annotations is not None and hasattr(annotations, "model_dump"):
+                annotations = annotations.model_dump(mode="json", by_alias=True, exclude_none=True)
+            tools.append(ToolInfo(tool.name, tool.description, deepcopy(tool.input_schema),
+                                  deepcopy(getattr(tool, "output_schema", None)), deepcopy(annotations)))
+            if len(tools) > max_tools:
+                raise ValueError("MCP catalog size limit")
+        cursor = getattr(page, "next_cursor", None)
+        if cursor is None:
+            return tuple(tools)
+        if (not isinstance(cursor, str) or not cursor or len(cursor) > 4096
+                or any(ord(c) < 32 for c in cursor) or cursor in seen):
+            raise ValueError("Invalid or repeated MCP pagination cursor")
+        seen.add(cursor)
+    raise ValueError("MCP pagination limit")
 
 
 def sdk_client(config, errlog):
@@ -34,7 +63,7 @@ def sdk_client(config, errlog):
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
     transport = stdio_client(StdioServerParameters(
-        command=config.executable, args=list(config.args), cwd=config.cwd,
+        command=config.executable, args=list(config.args), cwd=config.cwd, env=dict(config.env) if config.env else None,
     ), errlog=errlog)
     # Caller timeouts are managed below, not by discarding a live SDK request.
     return Client(transport)
@@ -169,6 +198,7 @@ class ServerWorker:
     """One owner task, one context, one serial queue, no process-name kills."""
 
     def __init__(self, config: ServerConfig, host: AsyncHost, client_factory=sdk_client):
+        self.connection_generation = uuid4().hex
         self.config, self.host, self.client_factory = config, host, client_factory
         self.lock = RLock()
         self.state = ServerState.STARTING
@@ -213,13 +243,15 @@ class ServerWorker:
                 self.error_code = "mcp_wait_timeout"
             return True
 
-    def enqueue(self, kind, payload=None):
+    def enqueue(self, kind, payload=None, *, operation_id=None):
         with self.lock:
             if self.state != ServerState.RUNNING or self._stop_requested:
                 raise MCPRuntimeError("mcp_not_ready", "MCP server is not ready for another operation.")
             if sum(not item.future.done() for item in self._records.values()) >= 32:
                 raise MCPRuntimeError("mcp_busy", "MCP server command queue is full.")
-            item = _Command(kind, payload)
+            if operation_id is not None and operation_id in self._records:
+                raise MCPRuntimeError("mcp_duplicate_operation", "Operation ID is already retained by this owner.")
+            item = _Command(kind, payload) if operation_id is None else _Command(kind, payload, operation_id=operation_id)
             self._records[item.operation_id] = item
             try:
                 self.host.submit(self._put(item))
@@ -291,14 +323,15 @@ class ServerWorker:
                 if self._stop_requested:
                     scope.cancel()
                 with open(os.devnull, "w", encoding="utf-8") as errlog:
-                    artifact = filesystem_artifact(self.config)
+                    from .attestation import filesystem_artifact
+                    artifact=filesystem_artifact(self.config)
                     async with self.client_factory(self.config, errlog) as client:
-                        self.connection_info = {
-                            "default_stdio": self.client_factory is sdk_client,
-                            "roots_disabled": self.client_factory is sdk_client and getattr(client, "list_roots_callback", None) is None,
-                            "protocol_version": getattr(client, "protocol_version", None),
-                            "filesystem_artifact": artifact if artifact == filesystem_artifact(self.config) else None,
-                        }
+                        self.connection_info={
+                            'config_fingerprint': fingerprint(config_data(self.config)),
+                            'default_stdio': self.client_factory is sdk_client,
+                            'roots_disabled': self.client_factory is sdk_client and getattr(client,'list_roots_callback',None) is None,
+                            'protocol_version': getattr(client,'protocol_version',None),
+                            'filesystem_artifact': artifact if artifact==filesystem_artifact(self.config) else None}
                         entered = True
                         with self.lock:
                             if not self._stop_requested:
@@ -319,10 +352,10 @@ class ServerWorker:
                                 self._active = item
                             try:
                                 if item.kind == "tools":
-                                    listed = (await client.list_tools(cache_mode="refresh") if item.payload
-                                              else await client.list_tools())
-                                    result = tuple(ToolInfo(t.name, t.description, deepcopy(t.input_schema))
-                                                   for t in listed.tools)
+                                    result = await discover_tools(client, refresh=bool(item.payload))
+                                elif item.kind == "call_once":
+                                    from .single_dispatch import execute_single
+                                    result = await execute_single(self, client, item)
                                 else:
                                     name, arguments = item.payload
                                     called = await client.call_tool(name, arguments)
@@ -331,12 +364,16 @@ class ServerWorker:
                                         deepcopy(called.structured_content), called.is_error,
                                     )
                             except Exception:
+                                if item.kind == "call_once" and not item.payload.attempted:
+                                    with self.lock:
+                                        self._finish(item, error="mcp_dispatch_rejected", cancelled=True)
+                                    continue
                                 # A lost call response cannot prove whether the
                                 # tool executed. Closing transport is not rollback.
-                                failure = ("mcp_call_uncertain" if item.kind == "call"
+                                failure = ("mcp_call_uncertain" if item.kind in {"call", "call_once"}
                                            else "mcp_connection_failed")
                                 with self.lock:
-                                    self.state = (ServerState.UNCERTAIN if item.kind == "call"
+                                    self.state = (ServerState.UNCERTAIN if item.kind in {"call", "call_once"}
                                                   else ServerState.ERROR)
                                     self.error_code = failure
                                     self._finish(item, error=failure)
@@ -355,7 +392,8 @@ class ServerWorker:
                 self._scope = None
                 for item in list(self._records.values()):
                     if not item.future.done():
-                        failed = failure if item.state == OperationState.RUNNING else None
+                        failed = ("mcp_call_uncertain" if item.kind == "call_once" and item.payload.attempted
+                                  else failure if item.state == OperationState.RUNNING else None)
                         self._finish(item, error=failed or "mcp_stopped", cancelled=not failed)
                 self._active = None
                 if cleanup_failure:
