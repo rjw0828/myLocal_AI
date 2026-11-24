@@ -105,7 +105,7 @@ test("Agent reuses model API with an independent scope", async () => {
   assert.equal(f.control.selected, 'b:latest');
 });
 
-test("single Console selection also updates Agent model display", async () => {
+test("single Console selection works without redundant Agent model display", async () => {
   const f = await fixture({ modelsEnabled: true, initialHandlers: {
     '/models': () => packet({ models: ['qwen3.5:9b','new:8b'], selected: 'qwen3.5:9b', busy: false }),
     '/models/selection': options => packet({ selected: JSON.parse(options.body).model }),
@@ -113,7 +113,7 @@ test("single Console selection also updates Agent model display", async () => {
   f.nodes['refresh-models'].click(); await flush();
   f.nodes['model-select'].value = 'new:8b';
   f.nodes['model-select'].dispatchEvent({ type: 'change' }); await flush();
-  assert.equal(f.nodes['agent-model-name'].textContent, 'new:8b');
+  assert.equal(f.nodes['agent-model-name'], undefined);
   assert.equal(f.nodes['configured-model'].textContent, 'new:8b');
   assert.equal(f.requests.filter(c => c.url.includes('scope=agent')).length, 0);
 });

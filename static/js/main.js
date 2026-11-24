@@ -1593,7 +1593,7 @@ document.addEventListener("DOMContentLoaded", () => {
       request: async (path, options) => requireSuccess(await requestJson(path, {
         ...options, headers: { "X-Local-AI-Control": "web-console", ...(options.headers || {}) },
       })),
-      onSelected: model => { configuredModel.textContent = model; serverModel.textContent = model; $("#agent-model-name").textContent = model; },
+      onSelected: model => { configuredModel.textContent = model; serverModel.textContent = model; },
       onChanging: () => updateInputState(),
     });
     modelRefreshTimer = window.setInterval(() => {

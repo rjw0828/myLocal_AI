@@ -135,6 +135,7 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
 
 .tool-console { min-height: 0; display: grid; grid-template-columns: 18fr 23fr 39fr 20fr; gap: 10px; }
 .tool-panel, .input-panel { padding: 12px; overflow: hidden; }
+.input-panel { overflow-y: auto; }
 .tool-buttons { display: grid; gap: 7px; }
 .tool-buttons button { min-height: 34px; padding: 5px 8px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); text-align: left; font-size: .78rem; cursor: pointer; }
 .tool-buttons button:hover, .tool-buttons button:focus-visible { border-color: #9ac8ad; }
@@ -166,6 +167,10 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
 .voice-mode-controls button[aria-pressed="true"] { background: var(--accent-pale); border-color: var(--accent); color: var(--accent-dark); }
 .voice-mode-controls :disabled { opacity: .6; cursor: not-allowed; }
 .tool-chat-controls { align-items: center; }
+.session-permission-controls { align-items: center; }
+.session-permission-controls label { color: var(--muted); font-size: .6rem; white-space: nowrap; }
+.session-permission-controls select { width: 90px; }
+.session-permission-controls [role="status"] { flex-basis: 100%; min-width: 0; color: var(--muted); font-size: .6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-chat-controls [role="status"] { flex: 1; min-width: 0; font-size: .65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-chat-output-status { margin: 2px 0; padding: 0 14px; font-size: .72rem; overflow-wrap: anywhere; max-height: 3em; overflow: auto; flex-shrink: 0; }
 .tool-chat-output-status:empty { display: none; }
