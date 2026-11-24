@@ -98,7 +98,7 @@ class ServiceApprovalCore(ApprovalCore):
             oid = uuid4().hex
             if oid in self._operations: raise ApprovalError('duplicate_operation')
             self.executor.register(oid, entry.server_id)
-            self._operations[oid] = {'operation_id': oid, 'run_id': rid}
+            self._operations[oid] = {'operation_id': oid, 'run_id': rid, 'proposal_id': pid}
             run['state'], run['active_operation'], run['unsettled'] = 'EXECUTING', oid, False
 
             def claim(current, args):

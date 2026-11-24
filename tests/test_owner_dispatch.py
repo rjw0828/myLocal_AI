@@ -216,12 +216,12 @@ class OwnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(c['closed'] and c['same_exit'] for c in self.runtime.contexts))
         self.assertFalse(self.runtime.manager._host.running)
 
-    async def test_default_real_factory_cannot_enter_single_dispatch(self):
+    async def test_default_factory_still_requires_registered_connection(self):
         manager = MCPManager()
         try:
             with self.assertRaises(MCPRuntimeError) as caught:
                 manager.call_tool_once('not-registered', 'fixture', {}, operation_id='blocked', before_send=lambda *_: None)
-            self.assertEqual(caught.exception.code, 'mcp_execution_bridge_disabled')
+            self.assertEqual(caught.exception.code, 'mcp_not_registered')
         finally: manager.shutdown()
         self.assertEqual(self.runtime.sends, 0)
 

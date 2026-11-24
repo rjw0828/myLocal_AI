@@ -57,10 +57,68 @@ class MCPManagement:
         self.policy = ApprovalPolicy(self.base / 'approval_policy.sqlite3')
         self._runtime_factory, self._binder = runtime_factory, contract_binder
         self._runtime, self._tests, self._scopes, self._lock = None, {}, {}, RLock()
+        self._contract_records={}
         self.service = MCPService(session_database_path=experimental_path(session_database_path) if session_database_path else self.base / 'virtual_sessions.sqlite3',
             database_path=self.base / 'mcp.sqlite3', approved_configs=self._profiles(),
             runtime_factory=self._get_runtime)
         self.catalog = MCPCatalog(self.service)
+        # Final admission already compares the owner's fresh descriptor with
+        # the pinned entry. Recheck disk provenance without reentering the
+        # manager's connection lock from the owner task.
+        self.policy.contract_verifier=lambda entry:self.verified_scope(entry,live=False)
+
+    @staticmethod
+    def filesystem_like(entry):
+        return entry.original_name in {'read_file','read_text_file','list_directory'} or 'path' in entry.descriptor['input_schema'].get('properties',{})
+
+    def _remember_contract(self,sid,scope,context,proof=None):
+        identity=None
+        if scope is not None and scope.root:
+            st=scope.root.stat();identity=(st.st_dev,st.st_ino)
+        self._contract_records[sid]=(context['config_hash'],context['connection_generation'],scope,identity,proof,deepcopy(context))
+
+    def verified_scope(self,entry,*,live=True):
+        sid=entry.server_id;scope=self.policy._contracts.get(sid)
+        if scope is None:return None
+        record=self._contract_records.get(sid)
+        if record is None:raise ManagementError('Missing connection attestation')
+        config_hash,generation,pinned,root_identity,proof,connection=record
+        context=self.service.execution_context(sid) if live else connection
+        if (scope!=pinned or context['config_hash']!=config_hash or context['connection_generation']!=generation
+                or entry.descriptor['source']['config_hash']!=config_hash
+                or entry.descriptor['source']['connection_generation']!=generation):
+            raise ManagementError('Connection contract changed')
+        if scope.root:
+            no_reparse(scope.root);st=scope.root.stat()
+            if (st.st_dev,st.st_ino)!=root_identity:raise ManagementError('Root replaced')
+        if proof is not None:
+            from mcp_manager.attestation import verified_filesystem
+            config=ServerConfig(sid,**context['config'])
+            if verified_filesystem(config,context['connection_info'])!=proof:raise ManagementError('Artifact changed')
+        return scope
+
+    def refresh_contracts(self):
+        """Attest ordinary Registry connections without starting or trusting them."""
+        if self._binder is not None:return  # explicitly reviewed fixture/pilot contracts
+        from mcp_manager.attestation import verified_filesystem
+        for row in self.list_servers():
+            sid=row['server_id']
+            if row['status']['state']!='RUNNING':continue
+            context=self.service.execution_context(sid)
+            old=self._contract_records.get(sid)
+            if old and old[:2]==(context['config_hash'],context['connection_generation']):continue
+            config=ServerConfig(sid,**context['config'])
+            scope=None;proof=None
+            if config.args and Path(config.args[0]).name=='index.js':
+                try:
+                    proof=verified_filesystem(config,context['connection_info'])
+                    root=experimental_path(proof['root'])
+                    scope=ReadOnlyScope(sid,'filesystem',root,allow_relative=proof['allow_relative'])
+                except Exception:scope=None;proof=None
+            self.policy.bind_contract(sid,scope)
+            if scope is not None:
+                self.policy.set_server_options(sid,root=scope.root,timeout=self.details(sid)['options']['timeout'])
+            self._remember_contract(sid,scope,context,proof)
 
     def _profiles(self):
         experimental_path(self.manifest)
@@ -150,7 +208,7 @@ class MCPManagement:
             actual=ServerConfig(server_id,config.executable,config.args,config.cwd,config.env)
             binding=fingerprint({'config':config_data(actual),'options':options})
             previous=self._scopes.get(server_id)
-            if previous is not None and previous[0]!=binding:
+            if self._binder is not None and previous is not None and previous[0]!=binding:
                 raise ManagementError('Execution contract changed; stop, delete and register a new server')
             scope=previous[1] if previous is not None else (
                 self._binder(runtime,actual,deepcopy(options)) if self._binder else None)
@@ -163,13 +221,19 @@ class MCPManagement:
             try:
                 status=self.service.start_server(server_id)
                 tools=self.service.list_tools(server_id)
+                self._remember_contract(server_id,scope,self.service.execution_context(server_id))
+                if self._binder is None:self.refresh_contracts_after_connect(server_id)
             except Exception:
                 try:self.service.stop_server(server_id)
                 finally:self.policy.invalidate_server(server_id)
                 raise ManagementError('Connection failed; no automatic retry') from None
             self.policy.audit('connection_discovered',server_id=server_id,tool_count=len(tools))
             return {'consented':True,'started':True,'status':status,'tools':tools,
-                    'execution_contract_verified':scope is not None}
+                    'execution_contract_verified':server_id in self.policy._contracts}
+
+    def refresh_contracts_after_connect(self,sid):
+        self._contract_records.pop(sid,None)
+        self.refresh_contracts()
 
     def tools(self, server_id):return self.service.list_tools(server_id)
 
@@ -184,6 +248,7 @@ class MCPManagement:
         self.policy.set_mode(mode,server_id=server_id,enable_auto=enable_auto)
 
     def entry(self, server_id, tool):
+        self.refresh_contracts()
         for entry in self.catalog.discover():
             if (entry.server_id,entry.original_name)==(server_id,tool):return entry
         raise ManagementError('Tool is blocked, unavailable or undiscovered')
@@ -265,6 +330,7 @@ class MCPManagement:
     def delete_server(self,server_id):
         result=self.service.delete_server(server_id);self.policy.forget_server(server_id)
         self._scopes.pop(server_id,None)
+        self._contract_records.pop(server_id,None)
         return result
 
     def shutdown(self):

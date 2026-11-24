@@ -698,6 +698,10 @@ $env:LOCAL_AI_DB_PATH = Join-Path $env:TEMP ("local-ai-delete-all-" + (Get-Date 
 
 남은 제한: 단일 Controller 프로세스, 다른 탭의 상태는 push 동기화하지 않음, 불확실 일괄 삭제의 수동 재동기화 필요, 평문 DB/과거 백업·WAL 데이터, STEP 6-5 연기 및 ISSUE-002 템플릿 후속 과제. 신규 패키지·모델 변경·Git Commit/Push는 없습니다.
 
+## 현재 Pydantic AI 통합 상태
+
+최신 Agent 엔진은 Pydantic AI이며 기존 Console의 일반 Chat/Voice와 수동 MCP 경로를 유지합니다. Agent는 기본 비활성이고 별도 호스트에서 선택 활성화합니다. [실행 및 통합 안내](INTEGRATION.md)와 [Known Issues](KNOWN_ISSUES.md)를 확인하세요. 아래 Base Framework 및 실험 결과는 각 단계의 역사적 기록입니다.
+
 ## Base Framework v1.0 완료 상태
 
 STEP 5 UI/Session 관리, STEP 6-1~6-4 로컬 STT/TTS·수동/자동 음성 대화, STEP 7 SQLite 저장·Reset/Delete/Delete All·재시작 복원 및 기본 안정성 검증을 완료했습니다. 사용자 최종 Edge 실기기 검증은 7/7 통과이며 최근 자동 테스트는 215개 통과입니다. 검색 기반 장기 기억, MCP·자동 Tool Calling, 모델 선택 및 주변기기 확장은 포함하지 않습니다.

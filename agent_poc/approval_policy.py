@@ -194,6 +194,8 @@ class ApprovalPolicy:
 
     def _scope(self,entry,args):
         scope=self._contracts.get(entry.server_id)
+        verifier=getattr(self,'contract_verifier',None)
+        if verifier is not None:scope=verifier(entry)
         if scope is not None:scope.validate(entry.original_name,args,entry.descriptor['input_schema'])
         elif 'path' in args:raise PolicyError('Filesystem-like arguments need a verified Root contract')
         return scope

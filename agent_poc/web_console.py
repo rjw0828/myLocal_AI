@@ -47,17 +47,48 @@ async def local_model(initial,*,name,diagnostic_path=None):
             'openai_reasoning_effort':'none','extra_body':{'max_tokens':512},'parallel_tool_calls':False}
 
 
+def registered_console(args,base):
+    """Existing Console, empty Registry, no automatic server registration/start."""
+    from mcp_manager.manager import MCPManager
+    from app import create_app
+    manager=MCPManagement(base/'management',runtime_factory=MCPManager,
+        session_database_path=base/'sessions.sqlite3')
+    backend=None
+    try:
+        def factory(service,revision,prepare,commit):
+            nonlocal backend
+            if service is not manager.service:raise ValueError('Shared service required')
+            backend=AgentWebBackend(manager,session_revision=revision,prepare=prepare,commit=commit,
+                model_factory=lambda initial:local_model(initial,name=args.model,diagnostic_path=base/'model-diagnostic.jsonl'),
+                model_name=args.model)
+            return backend
+        app=create_app(base/'sessions.sqlite3',mcp_existing_service=manager.service,agent_backend_factory=factory)
+        print(json.dumps({'event':'ready','url':f'http://127.0.0.1:{args.port}',
+            'mode':'registered-console','model':args.model,'base':str(base),'servers_started':0}),flush=True)
+        app.run(host='127.0.0.1',port=args.port,debug=False,use_reloader=False)
+    finally:
+        try:
+            if backend is not None:backend.shutdown()
+        finally:
+            try:(base/'audit.json').write_text(json.dumps(manager.audit(),indent=2),encoding='utf-8')
+            finally:manager.shutdown()
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base',type=Path,required=True)
-    parser.add_argument('--time-python',type=Path,required=True)
+    parser.add_argument('--time-python',type=Path)
     parser.add_argument('--model',choices=tuple(MODELS),default='local-ai-c4b-gemma4-8k')
     parser.add_argument('--port',type=int,default=5002)
     parser.add_argument('--approved-time-start',action='store_true')
+    parser.add_argument('--registered-console',action='store_true',help='Empty dynamic Console; explicit profile approval and Start are still required')
     args=parser.parse_args()
-    if not args.approved_time_start:parser.error('Separate explicit Time process-start approval required')
+    if args.registered_console and args.approved_time_start:parser.error('Choose registered Console or the bounded Time pilot')
+    if not args.registered_console and (not args.approved_time_start or args.time_python is None):
+        parser.error('Separate explicit Time process-start approval and --time-python required')
     if not 1024<=args.port<=65535:parser.error('Use an unprivileged local port')
     base=experimental_path(args.base);base.mkdir(exist_ok=False)
+    if args.registered_console:
+        registered_console(args,base);return
     layout=IsolationLayout(base)
     config=ServerConfig('c5a-time',str(args.time_python),('-m','mcp_server_time','--local-timezone=Asia/Seoul'),str(args.time_python.parent))
     review=LaunchReview([config],base=layout.base,live=True,reviewed_files=(args.time_python,))

@@ -38,6 +38,7 @@ class MCPManager:
             self._configs[config.server_id] = config
         self._workers = {}
         self._single_ids = set()
+        self._single_records = {}
         self._lock, self._shutdown_lock = RLock(), Lock()
         self._closing, self._closed = False, False
         self._client_factory = _client_factory
@@ -158,6 +159,12 @@ class MCPManager:
                 raise MCPRuntimeError("mcp_operation_not_found", "MCP server has no operation history.")
             return worker.operation(operation_id)
 
+    def connection_info(self, server_id):
+        with self._lock:
+            self._config(server_id)
+            worker=self._workers.get(server_id)
+            return deepcopy(worker.connection_info) if worker else None
+
     def _request(self, server_id, kind, payload, timeout):
         self._host.require_sync_caller()
         wait = self.call_timeout if timeout is None else _timeout(timeout)
@@ -193,12 +200,13 @@ class MCPManager:
         return self._request(server_id, "call", (name, arguments), timeout)
 
     def call_tool_once(self, server_id, name, arguments, *, operation_id, before_send, timeout=None):
-        """Preparation only: owned single dispatch accepts the exact memory factory."""
+        """Single owner dispatch for the standard SDK or explicit reviewed fixtures."""
         from agent_poc.owner_runtime import OwnerFakeFactory
         from agent_poc.readiness_gate import PreparedMemoryFactory
         from agent_poc.live_transport import ReviewedFactory
         from .single_dispatch import SingleDispatch
-        if type(self._client_factory) not in (OwnerFakeFactory, PreparedMemoryFactory, ReviewedFactory):
+        from .async_host import sdk_client
+        if self._client_factory is not sdk_client and type(self._client_factory) not in (OwnerFakeFactory, PreparedMemoryFactory, ReviewedFactory):
             raise MCPRuntimeError("mcp_execution_bridge_disabled", "Real single dispatch is not enabled.")
         self._host.require_sync_caller()
         wait = self.call_timeout if timeout is None else _timeout(timeout)
@@ -216,7 +224,28 @@ class MCPManager:
                 raise MCPRuntimeError("mcp_not_ready", "No connection owner.")
             self._single_ids.add(operation_id)
             item = worker.enqueue("call_once", payload, operation_id=operation_id)
+            self._single_records[operation_id]=(worker,item)
         return self._wait(worker, item, wait)
+
+    def details(self, sid, oid):
+        with self._lock:
+            pair=self._single_records.get(oid)
+            if pair is None or pair[0].config.server_id!=sid:raise MCPRuntimeError('mcp_operation_not_found','No dispatch.')
+            worker,item=pair
+            with worker.lock:
+                payload=item.payload
+                return {'state':item.state,'sent':True if payload.received else None if payload.attempted else False,
+                    'accepted':True if payload.received else None if payload.attempted else False,
+                    'cancel_confirmed':payload.cancelled and not payload.attempted and item.future.done(),
+                    'result':item.outcome.result if item.outcome else None}
+
+    def request_cancel(self, oid):
+        with self._lock:
+            pair=self._single_records.get(oid)
+            if pair is not None:
+                worker,item=pair
+                with worker.lock:
+                    item.payload.cancelled=True
 
     def shutdown(self):
         self._host.require_sync_caller()

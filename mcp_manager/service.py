@@ -319,6 +319,18 @@ class MCPService:
             tools = self._tools(row)
             return [self._catalog_descriptor(row, tool) for tool in tools]
 
+    def execution_context(self, server_id):
+        """Trusted local metadata only; never returned by the public REST API."""
+        row=self.registry.get(server_id)
+        self.refresh_profiles();self._require_approved(row)
+        if self._status(server_id).state!=ServerState.RUNNING:
+            raise MCPRuntimeError('mcp_not_ready','Server is not running.')
+        runtime=self._runtime
+        owner=getattr(runtime,'manager',runtime)
+        return {'config_hash':row['config_hash'],'config':json.loads(canonical_json(row['config'])),
+            'connection_generation':runtime.connection_generation(server_id),
+            'connection_info':owner.connection_info(server_id) if hasattr(owner,'connection_info') else None}
+
     def _catalog_descriptor(self, row, tool, *, connection_generation=None):
         server_id = row["server_id"]
         return asdict(tool) | {
@@ -451,7 +463,8 @@ class MCPService:
         from agent_poc.fake_runtime import FakeRuntime
         from agent_poc.owner_runtime import OwnerFakeRuntime
         from agent_poc.live_transport import ReviewedStdioRuntime
-        if (type(self._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime) or not isinstance(operation_id, str)
+        from .manager import MCPManager
+        if (type(self._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager) or not isinstance(operation_id, str)
                 or not operation_id or not callable(before_execute)):
             raise MCPServiceError("mcp_execution_bridge_disabled", "Real MCP execution is disabled for this bridge.", 403)
         with self._guard(server_id):

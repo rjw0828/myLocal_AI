@@ -38,10 +38,13 @@ class DeferredFixtureRun:
     No auto-approval, polling loop, HTTP API or production MCP integration.
     The caller must present decisions via decide(), then explicitly resume().
     """
-    def __init__(self, core, session_id, model, *, instructions=None, model_settings=None, message_history=None):
+    def __init__(self, core, session_id, model, *, instructions=None, model_settings=None, message_history=None,context_factory=None):
         self.core = core
         self.run_id = core.start_run(session_id)
         self.bridge = ApprovedFixtureBridge(core, self.run_id)
+        if context_factory is not None:
+            def workspace_context():return context_factory(self.bridge.entries)
+            instructions=[instructions or '',workspace_context]
         self.agent = Agent(model, toolsets=[self.bridge.toolset], instructions=instructions,
                            model_settings=model_settings,
                            output_type=[str, DeferredToolRequests], retries=0)

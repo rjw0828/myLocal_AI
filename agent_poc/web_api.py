@@ -94,6 +94,7 @@ def install_tool_chat(app, backend, *, guard):
     @api.get('/policy/<server_id>')
     def policy_view(server_id):
         manager=backend.manager
+        manager.refresh_contracts()
         tools=[]
         for entry in manager.catalog.discover():
             if entry.server_id==server_id:

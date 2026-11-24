@@ -1,4 +1,8 @@
-"""Guarded MCPService execution with a hard FakeRuntime-only boundary."""
+"""Guarded MCPService execution over explicit owner runtimes and their ledgers.
+
+The historical FakeServiceExecutor name is retained for existing callers. The
+standard MCPManager is supported only through its guarded single-dispatch API.
+"""
 import asyncio
 from copy import deepcopy
 import json
@@ -13,6 +17,7 @@ from mcp_manager.service import MCPService
 from .fake_runtime import FakeRuntime
 from .owner_runtime import OwnerFakeRuntime
 from .live_transport import ReviewedStdioRuntime
+from mcp_manager.manager import MCPManager
 
 
 STATES = frozenset({'CREATED', 'VALIDATING', 'DISPATCHING', 'RUNNING', 'COMPLETED',
@@ -34,13 +39,13 @@ class ExecutionError(RuntimeError):
 
 class FakeServiceExecutor:
     def __init__(self, service):
-        if type(service) is not MCPService or type(service._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime):
+        if type(service) is not MCPService or type(service._runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager):
             raise TypeError('C-3B-1 requires MCPService already connected to the exact FakeRuntime')
         self.service, self.runtime = service, service._runtime
         self._lock, self._records = RLock(), {}
 
     def _require_fake(self):
-        if self.service._runtime is not self.runtime or type(self.runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime):
+        if self.service._runtime is not self.runtime or type(self.runtime) not in (FakeRuntime, OwnerFakeRuntime, ReviewedStdioRuntime, MCPManager):
             raise RuntimeError('Real Runtime substitution is forbidden')
 
     def register(self, oid, sid):
