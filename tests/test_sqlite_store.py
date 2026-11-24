@@ -139,7 +139,7 @@ class SQLitePersistenceTests(unittest.TestCase):
 
     def test_inference_does_not_hold_sqlite_transaction(self):
         a = self.create()
-        def inference(_messages):
+        def inference(_messages, **_kwargs):
             # Independent writer would time out if Chat held a transaction.
             other = SQLiteStore(self.path, timeout=0.05)
             other.create("independent", explicit=True)

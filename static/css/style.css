@@ -267,3 +267,6 @@ th { color: var(--muted); font-size: .7rem; letter-spacing: .04em; }
   .tts-language-control { justify-content: space-between; }
 }
 @media (prefers-reduced-motion: reduce) { .terminal-cursor { animation: none; } }
+.model-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.model-controls select { max-width: 100%; min-width: 160px; padding: 7px; }
+#model-message { display: block; max-width: 420px; margin-top: 5px; overflow-wrap: anywhere; }

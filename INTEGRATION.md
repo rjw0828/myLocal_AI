@@ -12,6 +12,14 @@ Pydantic AI가 단일 Agent 엔진이다. 기존 Chat, Voice, Session/History/Re
 
 일반 Chat/Voice와 MCP Manager는 기존 방식으로 동작한다. Tool Chat은 기본 비활성이며 `/tool-chat` 실행 Route도 기본 등록하지 않는다. 일반 실행에 Pydantic AI를 설치하거나 모델을 자동 호출하지 않는다.
 
+## 웹에서 일반 Chat과 Voice 모델 선택
+
+기존 `start_app.bat`으로 실행한 뒤 AI Serve Locals의 Local Ollama 행에서 모델을 선택한다. 선택 즉시 저장되며 다음 일반 Chat/Voice 요청부터 적용된다. 기존 Session History는 지우지 않고, 진행 중인 Chat 요청의 모델은 바꾸지 않는다. 이 설정은 Controller 전체의 일반 Chat/Voice 설정이며 Agent 모델 선택이나 Agent 활성화와는 별개다.
+
+설치 목록은 로컬 Ollama의 `/api/tags` 메타데이터만 읽는다. 화면을 열어두면 30초마다 갱신하고 목록 새로고침 버튼으로 즉시 확인할 수 있다. 별도로 다운로드한 모델도 다음 목록 갱신에 표시된다. 모델을 자동 다운로드하거나 이 조회로 적재/추론하지 않는다. 삭제된 선택 모델을 다른 모델로 자동 대체하지 않는다.
+
+선택은 Session DB와 같은 디렉터리의 `model_settings.json`에 저장하며 기본 실행에서는 `data/model_settings.json`이다. 이 파일은 Git 대상이 아니다. 서버/브라우저를 다시 열면 저장된 선택과 현재 설치 목록을 확인한다. 이 UI를 처음 적용할 때 Flask 서버를 재시작하고 브라우저를 새로고침한다. 이후 모델 선택 변경에는 서버 재시작이 필요 없다. 설치 모델 각각의 Chat 적합성이나 응답 품질을 보장하는 기능은 아니다.
+
 ## Agent 선택 활성화
 
 검증된 Agent 의존성 환경과 설치된 로컬 Ollama 모델이 필요하다. `requirements-agent-mcp.txt`와 `requirements-agent-mcp.lock`은 Agent용 별도 환경의 의존성 자료다. 통합 작업에서는 운영 가상환경에 패키지를 설치하지 않는다. 기존 실험 Worktree의 검증된 가상환경을 계속 사용할 수 있다.

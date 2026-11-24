@@ -69,7 +69,7 @@ function packet(data, status = 200) {
   };
 }
 async function fixture({ emptySessions = false, savedSelection = null, extraSessions = [], savedDeleteAll = false,
-  savedStorage = null, initialHandlers = {}, agentEnabled = true } = {}) {
+  savedStorage = null, initialHandlers = {}, agentEnabled = true, modelsEnabled = false } = {}) {
   const root = path.resolve(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
   const nodes = {};
@@ -183,7 +183,7 @@ async function fixture({ emptySessions = false, savedSelection = null, extraSess
     performance: { now: () => Date.now() }, console, Intl, Uint8Array, ArrayBuffer, DataView,
   };
   vm.createContext(sandbox);
-  for (const file of ["tool-chat.js", "tool-chat-console.js", "main.js"]) {
+  for (const file of ["tool-chat.js", "tool-chat-console.js", ...(modelsEnabled ? ["model-selector.js"] : []), "main.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, "static/js", file), "utf8"), sandbox);
   }
   domReady();

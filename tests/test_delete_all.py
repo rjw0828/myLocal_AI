@@ -147,7 +147,7 @@ class DeleteAllTests(unittest.TestCase):
                     def __exit__(self, *_args):
                         base_lock.release()
                 state.lock = ObservedLock()
-                def delayed(_messages):
+                def delayed(_messages, **_kwargs):
                     entered.set()
                     if not release.wait(5):
                         raise RuntimeError("test did not release inference")

@@ -48,6 +48,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let recordingTurn = null;
   let voiceTurns = null;
   let toolChat = null;
+  let modelControls = null;
+  let modelRefreshTimer = null;
   let chatStorage = null;
   try { chatStorage = window.sessionStorage; } catch (_error) { /* In-tab guard remains. */ }
   const chatGuard = new ChatSessionGuard(chatStorage);
@@ -174,6 +176,7 @@ document.addEventListener("DOMContentLoaded", () => {
       serverToggle.dataset.online = String(data.ollama_reachable);
       configuredModel.textContent = data.model;
       serverModel.textContent = data.model;
+      if (modelControls) await modelControls.refresh();
       healthMessage.textContent = data.ollama_reachable
         ? "Flask Controller와 Ollama 서버가 정상적으로 응답했습니다."
         : "Flask Controller는 Online이지만 Ollama 서버는 Offline입니다.";
@@ -790,9 +793,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const secondsFromNanoseconds = (value) => `${(value / 1_000_000_000).toFixed(3)}s`;
   const formatChatMetrics = (data, browserSeconds = NaN, serverTimings = {}) => {
     const lines = [];
+    const model = typeof data.model === "string" ? data.model : "Model";
     if (Number.isFinite(browserSeconds)) lines.push(`Browser Chat round trip: ${browserSeconds.toFixed(3)}s`);
-    if (Number.isFinite(serverTimings.ollama)) lines.push(`Qwen request → complete response: ${serverTimings.ollama.toFixed(3)}s`);
-    lines.push("Qwen first token: unavailable (non-streaming /chat contract)");
+    if (Number.isFinite(serverTimings.ollama)) lines.push(`${model} request → complete response: ${serverTimings.ollama.toFixed(3)}s`);
+    lines.push(`${model} first token: unavailable (non-streaming /chat contract)`);
     if (typeof data.elapsed_seconds === "number") lines.push(`Elapsed: ${data.elapsed_seconds.toFixed(3)}s`);
     const metrics = data.metrics && typeof data.metrics === "object" ? data.metrics : {};
     if (typeof metrics.eval_count === "number") lines.push(`Generated tokens: ${metrics.eval_count}`);
@@ -1173,6 +1177,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const locked = lockButton.getAttribute("aria-pressed") === "true";
     const voiceBusy = isVoiceBusy();
     const automatic = Boolean(voiceTurns && voiceTurns.active);
+    modelControls?.setBlocked(requestRunning || voiceBusy || automatic);
+    const modelChanging = Boolean(modelControls?.saving);
     const sessionId = sessionInput.value.trim();
     const blocked = sessionId ? chatGuard.reason(sessionId) : null;
     const toolBlocked = Boolean(toolChat?.blocked(sessionId));
@@ -1184,9 +1190,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const row = button.closest(".session-row");
       button.disabled = deletingAll || deleteAllUncertain || Boolean(row && deletingSessions.has(row.dataset.sessionId));
     });
-    messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy || toolBlocked;
+    messageInput.disabled = locked || !sessionId || unavailable || requestRunning || voiceBusy || toolBlocked || modelChanging;
     sttLanguage.disabled = locked || requestRunning || voiceBusy;
-    recordVoiceButton.disabled = locked || !sessionId || unavailable || requestRunning
+    recordVoiceButton.disabled = locked || !sessionId || unavailable || requestRunning || modelChanging
       || Boolean(blocked) || toolBlocked || (automatic && voiceState !== "recording")
       || (["requesting", "transcribing"].includes(voiceState));
     recordVoiceButton.textContent = voiceState === "recording"
@@ -1196,7 +1202,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     resetSessionButton.disabled = !sessionId || unavailable || requestRunning || (voiceBusy && !automatic);
     ttsLanguage.disabled = voiceBusy;
-    voiceModeButton.disabled = requestRunning || toolBlocked || Boolean(toolChat?.enabled) || (voiceBusy && !automatic);
+    voiceModeButton.disabled = modelChanging || requestRunning || toolBlocked || Boolean(toolChat?.enabled) || (voiceBusy && !automatic);
     $("#tool-chat-mode").disabled = requestRunning || voiceBusy || voiceModeEnabled;
     cancelVoiceTurnButton.disabled = !automatic;
     const messages = conversations.get(currentConversationSession) || [];
@@ -1310,6 +1316,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   const runSelectedTool = async (tool = "chat") => {
+    if (modelControls?.saving && tool === "chat") return;
     if (tool !== "health" && (deletingAll || deleteAllUncertain)) return;
     if (tool === "reset") return resetCurrentSession();
     if (requestRunning) return;
@@ -1580,6 +1587,20 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!nextLocked) messageInput.focus();
   });
 
+  if (typeof LocalAIModelSelector !== "undefined") {
+    modelControls = new LocalAIModelSelector.ModelSelector({
+      select: $("#model-select"), refresh: $("#refresh-models"), message: $("#model-message"),
+      request: async (path, options) => requireSuccess(await requestJson(path, {
+        ...options, headers: { "X-Local-AI-Control": "web-console", ...(options.headers || {}) },
+      })),
+      onSelected: model => { configuredModel.textContent = model; serverModel.textContent = model; },
+      onChanging: () => updateInputState(),
+    });
+    modelRefreshTimer = window.setInterval(() => {
+      if (!serverView.hidden) modelControls.refresh();
+    }, 30_000);
+  }
+
   // MCP-5D-3: explicit opt-in; ordinary /chat and Voice retain their own flows.
   if ($("#tool-chat-mode")?.dataset?.agentEnabled === "true") {
   const toolTracker = new LocalAIToolChat.ToolChatTracker({
@@ -1617,6 +1638,8 @@ document.addEventListener("DOMContentLoaded", () => {
   updateInputState();
   initializeSessions().then(() => toolChat?.restoreKnownJobs());
   window.addEventListener("beforeunload", () => {
+    modelControls?.dispose();
+    if (modelRefreshTimer !== null) window.clearInterval(modelRefreshTimer);
     toolChat?.dispose();
     voiceTurns.cancel("Page closed.");
     stopTts("Page closed. TTS playback was stopped.", false);

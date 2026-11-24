@@ -152,7 +152,7 @@ class SessionApiTests(unittest.TestCase):
                 before_b = self.client.get(f"/sessions/{b['session_id']}/history").json
                 entered, release, reset_entered = Event(), Event(), Event()
 
-                def delayed_answer(_messages):
+                def delayed_answer(_messages, **_kwargs):
                     entered.set()
                     if not release.wait(5):
                         raise RuntimeError("test did not release Chat")
@@ -190,7 +190,7 @@ class SessionApiTests(unittest.TestCase):
         self.client.post("/chat", json={"session_id": b["session_id"], "message": "B question", "response_language": "en"})
         entered, release = Event(), Event()
 
-        def delayed_answer(_messages):
+        def delayed_answer(_messages, **_kwargs):
             entered.set()
             if not release.wait(5):
                 raise RuntimeError("test did not release Chat")
@@ -293,7 +293,7 @@ class SessionApiTests(unittest.TestCase):
 
                 state.lock = ObservedLock()
 
-                def delayed(_messages):
+                def delayed(_messages, **_kwargs):
                     entered.set()
                     if not release.wait(5):
                         raise RuntimeError("test did not release Chat")

@@ -82,13 +82,14 @@ function Get-TestPlan {
         return [pscustomobject]@{
             DiscoverPython = $true
             Python = @()
-            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js", "tests/test_mcp_ui.js", "tests/test_tool_chat_ui.js", "tests/test_tool_chat_console.js", "tests/test_agent_policy_ui.js")
+            JavaScript = @("tests/test_voice_turn.js", "tests/test_voice_ui.js", "tests/test_mcp_ui.js", "tests/test_tool_chat_ui.js", "tests/test_tool_chat_console.js", "tests/test_agent_policy_ui.js", "tests/test_model_selector.js")
         }
     }
 
     foreach ($name in $SelectedModules) {
         switch ($name) {
             "app" {
+                Add-UniqueItem $python "tests/test_model_selection.py"
                 Add-UniqueItem $python "tests/test_app.py"
                 if ($SelectedMode -eq "integration") {
                     Add-UniqueItem $python "tests/test_sessions.py"
@@ -119,6 +120,7 @@ function Get-TestPlan {
                 }
             }
             "ui" {
+                Add-UniqueItem $javascript "tests/test_model_selector.js"
                 Add-UniqueItem $javascript "tests/test_agent_policy_ui.js"
                 Add-UniqueItem $javascript "tests/test_tool_chat_console.js"
                 Add-UniqueItem $javascript "tests/test_tool_chat_ui.js"

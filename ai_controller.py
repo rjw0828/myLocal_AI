@@ -20,9 +20,27 @@ def check_ollama() -> None:
         raise ValueError("Invalid Ollama version response")
 
 
-def ask_ollama(messages: list[dict[str, Any]], *, tools=None, timeout=None, response_limit=None) -> dict[str, Any]:
+def list_models() -> list[str]:
+    """Read installed model metadata only; never pull or load a model."""
+    with urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=3) as response:
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError('Model list exceeds limit')
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get('models'), list) or len(data['models']) > 4096:
+        raise ValueError('Invalid model list')
+    names = []
+    for item in data['models']:
+        name = item.get('name') if isinstance(item, dict) else None
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or len(name) > 512 or any(ord(c) < 32 for c in name):
+            raise ValueError('Invalid installed model name')
+        names.append(name)
+    return sorted(set(names))
+
+
+def ask_ollama(messages: list[dict[str, Any]], *, model=None, tools=None, timeout=None, response_limit=None) -> dict[str, Any]:
     body = {
-        "model": MODEL,
+        "model": MODEL if model is None else model,
         "messages": messages,
         "stream": False,
         "think": False

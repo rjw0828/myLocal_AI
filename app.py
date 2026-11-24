@@ -20,6 +20,7 @@ import ai_controller
 import ollama_runtime
 from voice import stt_service, tts_service
 from storage.sqlite_store import DEFAULT_DB_PATH, SQLiteStore, StorageError
+from model_selection import ModelSelection, SelectionBusy
 
 HOST = "127.0.0.1"
 PORT = 5000
@@ -84,6 +85,8 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     store = SQLiteStore(database_path or os.environ.get("LOCAL_AI_DB_PATH") or DEFAULT_DB_PATH,
                         limit=MAX_ACTIVE_SESSIONS)
+    model_selection = ModelSelection(store.path.parent / 'model_settings.json', ai_controller.MODEL)
+    app.extensions['model_selection'] = model_selection
     app.extensions["session_store"] = store
     sessions: dict[str, Session] = {}
     deleted_session_ids: set[str] = set()
@@ -352,8 +355,57 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         except (urllib.error.URLError, TimeoutError, ValueError, OSError):
             reachable = False
         return jsonify(
-            controller="ok", ollama_reachable=reachable, model=ai_controller.MODEL,
+            controller="ok", ollama_reachable=reachable, model=model_selection.current(),
         ), 200 if reachable else 503
+
+    def model_control_guard():
+        from mcp_manager.errors import MCPServiceError
+        try:
+            return app.extensions['mcp_request_guard']()
+        except MCPServiceError as error:
+            return error_response(error.code, str(error), error.status)
+
+    @app.after_request
+    def model_response_headers(response):
+        if request.path in {'/models', '/models/selection'}:
+            response.headers['Cache-Control'] = 'no-store'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+        return response
+
+    @app.get('/models')
+    def installed_models():
+        denied = model_control_guard()
+        if denied is not None:
+            return denied
+        try:
+            names = ai_controller.list_models()
+        except (OSError, TimeoutError, ValueError):
+            return error_response('model_list_unavailable', 'Ollama 설치 모델 목록을 읽지 못했습니다.', 503)
+        state = model_selection.status()
+        return jsonify(models=names, **state, selected_available=state['selected'] in names,
+                       scope='chat_voice', agent_model=getattr(tool_backend, 'model_name', None))
+
+    @app.put('/models/selection')
+    def select_model():
+        denied = model_control_guard()
+        if denied is not None:
+            return denied
+        data = request.get_json(silent=True) if request.is_json else None
+        if not isinstance(data, dict) or set(data) != {'model'} or not ModelSelection.valid(data['model']):
+            return error_response('invalid_model', '설치된 모델을 선택해주세요.', 400)
+        try:
+            names = ai_controller.list_models()
+        except (OSError, TimeoutError, ValueError):
+            return error_response('model_list_unavailable', 'Ollama 설치 모델 목록을 읽지 못했습니다.', 503)
+        try:
+            state = model_selection.select(data['model'], names)
+        except SelectionBusy:
+            return error_response('model_busy', '응답 완료 후 모델을 변경해주세요.', 409)
+        except ValueError:
+            return error_response('invalid_model', '모델이 설치 목록에 없습니다. 목록을 새로고침해주세요.', 400)
+        except (OSError, TimeoutError):
+            return error_response('model_selection_unavailable', '모델 목록 조회 또는 선택 저장에 실패했습니다.', 503)
+        return jsonify(**state, scope='chat_voice')
 
     @app.post("/chat")
     def chat() -> tuple[Response, int]:
@@ -386,7 +438,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
         committed = False
         try:
             # Keep a chat and a concurrent reset on the same session ordered.
-            with session.lock, tool_backend.reservations.ordinary(session_id):
+            with session.lock, tool_backend.reservations.ordinary(session_id), model_selection.use() as request_model:
                 require_live_session(session)
                 refresh_session(session_id, session)
                 messages = session.messages or [
@@ -419,7 +471,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
                         "content": f"{message}\n\n[Response requirements]\n{instruction}",
                     }
                 ollama_started = time.perf_counter()
-                result = ai_controller.ask_ollama(request_messages + [request_user_message])
+                result = ai_controller.ask_ollama(request_messages + [request_user_message], model=request_model)
                 ollama_seconds = time.perf_counter() - ollama_started
                 if not isinstance(result, dict) or result.get("error"):
                     raise InvalidOllamaResponse()
@@ -469,7 +521,7 @@ def create_app(database_path=None, *, mcp_database_path=None, mcp_approved_confi
                             committed=committed)
         elapsed_seconds = time.perf_counter() - started
         response = jsonify(
-            session_id=session_id, model=ai_controller.MODEL,
+            session_id=session_id, model=request_model,
             message=answer["content"], elapsed_seconds=elapsed_seconds,
             metrics=metrics,
         )

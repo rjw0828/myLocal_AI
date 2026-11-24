@@ -55,7 +55,7 @@
             <article class="status-card" id="ollama-card"><span>Ollama Server</span><strong id="ollama-status" class="status-value is-pending">확인 전</strong><small>127.0.0.1:11434</small></article>
             <article class="status-card"><span>Configured Model</span><strong id="configured-model">qwen3.5:9b</strong><small>Thinking OFF</small></article>
           </div>
-          <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태 / 제어</th></tr></thead><tbody id="local-server-list"><tr data-server-id="local-ollama"><td>Local Ollama</td><td>127.0.0.1:11434</td><td id="server-model">qwen3.5:9b</td><td><button class="status-pill is-pending" id="server-toggle" type="button" disabled>확인 전</button></td></tr></tbody></table></div>
+          <div class="server-table-wrap"><table><caption>등록된 로컬 AI 서버</caption><thead><tr><th>이름</th><th>주소</th><th>모델</th><th>상태 / 제어</th></tr></thead><tbody id="local-server-list"><tr data-server-id="local-ollama"><td>Local Ollama</td><td>127.0.0.1:11434</td><td><span id="server-model" hidden>qwen3.5:9b</span><div class="model-controls"><select id="model-select" aria-label="일반 Chat 및 Voice 모델" disabled><option>목록 확인 전</option></select><button id="refresh-models" class="secondary-button" type="button">목록 새로고침</button></div><small id="model-message" role="status" aria-live="polite">설치된 Ollama 모델을 선택합니다. Agent 모델은 별도 설정입니다.</small></td><td><button class="status-pill is-pending" id="server-toggle" type="button" disabled>확인 전</button></td></tr></tbody></table></div>
           <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. Ollama 종료는 다른 프로그램에서 진행 중인 작업도 중단할 수 있습니다.</p>
           <section id="mcp-manager" class="mcp-manager" aria-labelledby="mcp-title">
             <div class="section-title-row"><div><p class="kicker">LOCAL TOOLS · STDIO</p><h2 id="mcp-title">MCP Server Manager</h2></div><div class="mcp-header-actions"><button id="mcp-help" type="button" class="secondary-button">Help?</button><button id="mcp-refresh" type="button" class="secondary-button">Refresh MCP</button><button id="mcp-add" type="button" class="secondary-button" aria-haspopup="dialog" aria-controls="mcp-dialog">+ Add Server</button></div></div>
@@ -227,6 +227,7 @@
   <script src="{{ url_for('static', filename='js/voice-turn.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/tool-chat.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/tool-chat-console.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/model-selector.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/mcp-schema.js') }}" defer></script>
   <script src="{{ url_for('static', filename='js/mcp-ui.js') }}" defer></script>

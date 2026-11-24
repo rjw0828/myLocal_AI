@@ -356,8 +356,8 @@ class AppTests(unittest.TestCase):
             self.assertIn("value / 1_000_000_000", script)
             for value in ("parseServerTiming", "Recording stop → WAV ready",
                           "Flask multipart parse/read", "Whisper inference",
-                          "Qwen request → complete response",
-                          "Qwen first token: unavailable",
+                          "${model} request → complete response",
+                          "${model} first token: unavailable",
                           "Piper model load", "Piper synthesis",
                           "WAV received → Audio.play()"):
                 self.assertIn(value, script)
@@ -700,7 +700,7 @@ class AppTests(unittest.TestCase):
         entered, release = Event(), Event()
         calls = []
 
-        def answer(messages):
+        def answer(messages, **_kwargs):
             calls.append(deepcopy(messages))
             if len(calls) == 1:
                 entered.set()
@@ -727,7 +727,7 @@ class AppTests(unittest.TestCase):
     def test_different_sessions_can_run_independently(self) -> None:
         entered = Barrier(2, timeout=5)
 
-        def answer(messages):
+        def answer(messages, **_kwargs):
             entered.wait()
             return chat_result()
 
@@ -755,7 +755,7 @@ class AppTests(unittest.TestCase):
     def test_reset_during_chat_clears_completed_turn(self) -> None:
         entered, release, reset_started = Event(), Event(), Event()
 
-        def answer(messages):
+        def answer(messages, **_kwargs):
             entered.set()
             if not release.wait(5):
                 raise RuntimeError("Test did not release request")
