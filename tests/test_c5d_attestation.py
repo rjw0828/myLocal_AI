@@ -30,7 +30,7 @@ class SyntheticClient:
         if self.config.args==('--generic',):
             return ListToolsResult(tools=[Tool(name='convert_temperature',description='Generic fixture',input_schema={
                 'type':'object','properties':{'value':{'type':'number'}},'required':['value']}),
-                Tool(name='echo_text',input_schema={'type':'object','properties':{}})])
+                Tool(name='echo_text',input_schema={'type':'object','properties':{'path':{'type':'string'}}})])
         return ListToolsResult(tools=[Tool(name='read_file',description='fixture read',input_schema={
             'type':'object','properties':{'path':{'type':'string'}},'required':['path']})])
     async def call_tool(self,name,arguments,**kwargs):
@@ -90,6 +90,11 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_artifact_and_execution_config_changes_fail_closed(self):
         entry=self.catalog.discover()[0]
+        current=list(self.manager.service.profiles().values())
+        unsafe=replace(current[0],server_id='unsafe-settings',args=(str(self.script),str(self.root)))
+        self.manager.service.replace_local_profiles([*current,unsafe])
+        with self.assertRaises(Exception):self.manager.service.configure(self.sid,'unsafe-settings')
+        self.assertEqual(self.manager.service.registry.get(self.sid)['profile_id'],current[0].server_id)
         self.script.write_text('// tampered')
         with self.assertRaises(Exception):self.catalog.model_context([entry])
         self.assertEqual(SyntheticClient.calls,0)
@@ -113,6 +118,10 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         self.manager.set_enabled(sid,True)
         entries=[e for e in self.catalog.discover() if e.server_id==sid]
         self.assertEqual({e.original_name for e in entries}, {'convert_temperature','echo_text'})
+        generic=next(e for e in entries if e.original_name=='echo_text')
+        self.catalog.validate(generic,{'path':'generic-resource'})
+        self.assertEqual(self.manager.policy.evaluate(generic,{'path':'generic-resource'},
+            permission={'mode':'ALLOW_ALL','manual_generation':0}).action,'AUTO_APPROVE')
         self.manager.service.registry.set_permission(sid,'convert_temperature','old-schema',False)
         entry=next(e for e in entries if e.original_name=='convert_temperature')
         self.catalog.validate(entry,{'value':25})
@@ -129,7 +138,28 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         self.manager.service.set_enabled(sid,True)
         with self.assertRaises(Exception):self.catalog.validate(entry,{'value':25})
         self.manager.stop_server(sid)
+        # Enabled connections are restored on demand, while a disabled server
+        # must stay absent even when Catalog preparation runs again.
+        self.assertTrue(any(e.server_id==sid for e in self.catalog.discover()))
+        self.manager.service.set_enabled(sid,False)
         self.assertFalse(any(e.server_id==sid for e in self.catalog.discover()))
+        self.assertEqual(SyntheticClient.calls,0)
+
+    def test_reviewed_configuration_changes_root_and_invalidates_old_catalog(self):
+        before=self.catalog.discover()[0]
+        new_root=self.base/'new-root';new_root.mkdir()
+        (new_root/'test.txt').write_text('new fixture')
+        current=list(self.manager.service.profiles().values())
+        profile=replace(current[0],server_id='replacement',args=(str(self.script),'--read-only','--confine-roots',str(new_root)))
+        self.manager.service.replace_local_profiles([*current,profile])
+        result=self.manager.service.configure(self.sid,'replacement')
+        self.assertTrue(result['connected'])
+        after=self.catalog.discover()[0]
+        self.assertNotEqual(before.identity,after.identity)
+        self.assertIn(str(new_root).replace('\\','\\\\'),self.catalog.model_context([after]))
+        self.catalog.validate(after,{'path':'test.txt'})
+        with self.assertRaises(Exception):self.catalog.validate(after,{'path':str(self.root/'test.txt')})
+        with self.assertRaises(Exception):self.catalog.validate(before,{'path':'test.txt'})
         self.assertEqual(SyntheticClient.calls,0)
 
     def test_restart_requires_fresh_trust_and_root_replacement_is_rejected(self):

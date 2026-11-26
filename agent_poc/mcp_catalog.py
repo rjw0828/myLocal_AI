@@ -86,9 +86,10 @@ class CatalogEntry:
 
 class MCPCatalog:
     """Snapshots pin source metadata; refresh never silently upgrades old tools."""
-    def __init__(self, service, *, max_tools=512, max_bytes=4 * 1024 * 1024):
+    def __init__(self, service, *, max_tools=512, max_bytes=4 * 1024 * 1024, isolate_failures=False):
         self.service = service
         self.max_tools, self.max_bytes = max_tools, max_bytes
+        self.isolate_failures=isolate_failures
 
     def discover(self):
         entries, aliases, pairs, total_bytes = [], set(), set(), 0
@@ -96,7 +97,25 @@ class MCPCatalog:
             if not server['enabled'] or not server['execution_approved'] or server['status']['state'] != 'RUNNING':
                 continue
             sid = server['server_id']
-            for tool in self.service.catalog_tools(sid):
+            from mcp_manager.errors import MCPServiceError
+            from mcp_manager.models import MCPRuntimeError
+            try:
+                tools=self.service.catalog_tools(sid)
+                names=set()
+                for tool in tools:
+                    name=tool['name']
+                    if not isinstance(name,str) or not name or name in names:raise CatalogError('Invalid source tool')
+                    names.add(name);validate_schema(tool['input_schema'])
+                    if tool.get('output_schema') is not None:validate_schema(tool['output_schema'])
+                    if not all(k in tool.get('source',{}) for k in ('config_hash','connection_generation','permission_generation')):
+                        raise CatalogError('Missing source identity')
+            except (MCPServiceError,MCPRuntimeError,CatalogError,KeyError,TypeError):
+                if not self.isolate_failures:raise
+                self.service._connection_errors[sid]='mcp_catalog_unavailable'
+                continue  # A failed server cannot hide healthy peers.
+            errors=getattr(self.service,'_connection_errors',{})
+            if errors.get(sid)=='mcp_catalog_unavailable':errors.pop(sid,None)
+            for tool in tools:
                 if not tool['allowed']:
                     continue
                 name = tool['name']

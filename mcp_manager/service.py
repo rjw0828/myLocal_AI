@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import logging
 from threading import Lock, RLock
 from types import SimpleNamespace
 import time
@@ -52,6 +53,7 @@ class MCPService:
         self._actions, self._stopping = {}, set()
         self._permission_generations = {}
         self._closing = False
+        self._lifecycle_gates, self._connection_attempts, self._connection_errors, self._discovered = {}, {}, {}, set()
         self.clock = time.monotonic
 
     def _open(self):
@@ -95,8 +97,11 @@ class MCPService:
                         if (not isinstance(item, dict) or not {"profile_id", "executable"} <= set(item)
                                 or set(item) - {"profile_id", "executable", "args", "cwd", "env"}):
                             raise ValueError()
-                        configs.append(ServerConfig(item["profile_id"], item["executable"],
-                                                    item.get("args", ()), item.get("cwd"),item.get('env',())))
+                        try:
+                            configs.append(ServerConfig(item["profile_id"], item["executable"],
+                                                        item.get("args", ()), item.get("cwd"),item.get('env',())))
+                        except (OSError,ValueError):
+                            logging.getLogger('local_ai.mcp').warning('approved_profile_unavailable')
                 profiles = {}
                 for config in configs:
                     if not isinstance(config, ServerConfig) or config.server_id in profiles:
@@ -146,11 +151,97 @@ class MCPService:
             return ServerStatus(server_id, ServerState.STOPPED)
 
     def _view(self, row):
+        status = self._status(row['server_id'])
+        operation = status.last_operation
+        if status.active_operation_id:
+            try:operation=self._runtime.get_operation(row['server_id'],status.active_operation_id)
+            except (AttributeError,MCPRuntimeError):operation=None
         return {key: row[key] for key in ("server_id", "profile_id", "name", "created_at")} | {
             "transport": "stdio", "execution_approved": self._approved(row),
             "enabled": row['enabled'],
-            "status": public_status(self._status(row["server_id"])),
+            "status": public_status(status),
+            "connected": status.state==ServerState.RUNNING,
+            "executing": bool(operation and operation.kind in {'call','call_once'} and operation.state=='RUNNING'),
+            "connection_error": self._connection_errors.get(row['server_id']),
         }
+
+    def _lifecycle_gate(self, server_id):
+        self.registry.get(server_id)
+        with self._lock:return self._lifecycle_gates.setdefault(server_id,RLock())
+
+    def ensure_connection(self, server_id):
+        """At most one connection attempt per server; never replay a Tool call."""
+        with self._lifecycle_gate(server_id):
+            row=self.registry.get(server_id)
+            if not row['enabled']:return False
+            identity=(row['config_hash'],row['enabled_generation'])
+            status=self._status(server_id)
+            if status.state==ServerState.RUNNING and server_id in self._discovered:return True
+            previous=self._connection_attempts.get(server_id)
+            if previous and previous[0]==identity and (previous[2]>=3 or self.clock()-previous[1]<5):return False
+            count=previous[2] if previous and previous[0]==identity else 0
+            self._connection_attempts[server_id]=(identity,self.clock(),count+1)
+            try:
+                self.refresh_profiles();self._require_approved(row)
+                from .attestation import validate_filesystem_configuration
+                validate_filesystem_configuration(self.profiles()[row['profile_id']])
+                if status.state==ServerState.UNCERTAIN:
+                    raise MCPServiceError('mcp_recovery_required','Disable this server to finish uncertain cleanup.',409)
+                if status.state!=ServerState.RUNNING:
+                    if status.state!=ServerState.STOPPED:self.stop_server(server_id)
+                    self.start_server(server_id)
+                self.list_tools(server_id)
+                self._discovered.add(server_id)
+                self._connection_attempts.pop(server_id,None)
+                self._connection_errors.pop(server_id,None)
+                return True
+            except Exception as error:
+                self._connection_errors[server_id]=getattr(error,'code','mcp_connection_failed')
+                logging.getLogger('local_ai.mcp').warning('connection_failed server_id=%s error_type=%s code=%s',
+                    server_id,type(error).__name__,self._connection_errors[server_id])
+                return False
+
+    def ensure_enabled_connections(self):
+        for row in self.registry.list_servers():
+            if row['enabled']:self.ensure_connection(row['server_id'])
+
+    def configuration(self, server_id):
+        """Only reviewed profile choices; never expose secret env/argument values."""
+        row=self.registry.get(server_id)
+        profiles=self.refresh_profiles()
+        def view(profile):
+            from .attestation import filesystem_artifact
+            proof=filesystem_artifact(profile)
+            return {'profile_id':profile.server_id,'executable':profile.executable,'argument_count':len(profile.args),
+                    'cwd':profile.cwd,'environment_keys':[key for key,_ in profile.env],
+                    'root':proof['root'] if proof else None}
+        return {'server_id':server_id,'profile_id':row['profile_id'],
+                'profiles':[view(p) for p in profiles.values()],
+                'limitation':'Execution changes require a locally approved profile. Root follows its reviewed read-only arguments.'}
+
+    def configure(self, server_id, profile_id):
+        with self._lifecycle_gate(server_id):
+            with self._guard(server_id,'configuration') as row:
+                profiles=self.refresh_profiles()
+                if profile_id not in profiles:raise MCPServiceError('mcp_execution_not_approved','Select a locally approved execution profile.',403)
+                config=config_data(profiles[profile_id])
+                from .attestation import validate_filesystem_configuration
+                try:validate_filesystem_configuration(profiles[profile_id])
+                except ValueError:raise MCPServiceError('mcp_configuration_invalid','Reviewed read-only Filesystem settings and a valid Root are required.',400) from None
+                if row['profile_id']==profile_id and row['config']==config:return self._view(row)
+                if any(r['server_id']!=server_id and (r['profile_id']==profile_id or r['config_hash']==fingerprint(config)) for r in self.registry.list_servers()):
+                    raise MCPServiceError('mcp_registry_conflict','This profile is already registered.',409)
+                # An active Tool owns the service gate, so this edit is rejected
+                # before saving. Idle connections are stopped, never overwritten.
+                self.stop_server(server_id)
+                with self._lock:
+                    if server_id in self._registered:
+                        self._runtime.unregister_server(server_id);self._registered.remove(server_id)
+                updated=self.registry.configure(server_id,profile_id,config)
+                self._discovered.discard(server_id);self._clear_tokens(server_id)
+                self._connection_attempts.pop(server_id,None);self._connection_errors.pop(server_id,None)
+            if updated['enabled']:self.ensure_connection(server_id)
+            return self.get_server(server_id)
 
     def list_servers(self):
         return [self._view(row) for row in self.registry.list_servers()]
@@ -230,6 +321,7 @@ class MCPService:
                 self._runtime.register_server(config)
                 self._registered.add(server_id)
             self._clear_tokens(server_id)
+            self._discovered.discard(server_id)
             self._runtime.start_server(server_id)
             return self._view(row)
 
@@ -243,6 +335,7 @@ class MCPService:
         try:
             row = self.registry.get(server_id)
             self._clear_tokens(server_id)
+            self._discovered.discard(server_id)
             if server_id in self._registered:
                 self._runtime.stop_server(server_id)
             return self._view(row)
@@ -254,9 +347,9 @@ class MCPService:
                 self._stopping.discard(server_id)
 
     def delete_server(self, server_id):
-        with self._guard(server_id, "delete"):
-            if self._status(server_id).state != ServerState.STOPPED:
-                raise MCPServiceError("mcp_server_not_stopped", "Explicitly stop the server before deleting it.", 409)
+        with self._lifecycle_gate(server_id), self._guard(server_id, "delete"):
+            if server_id in self._registered:self._runtime.stop_server(server_id)
+            self._discovered.discard(server_id)
             with self._lock:
                 if server_id in self._registered:
                     self._runtime.unregister_server(server_id)
@@ -265,6 +358,8 @@ class MCPService:
             # Start can safely register its unchanged config again.
             self.registry.delete(server_id)
             self._clear_tokens(server_id)
+            self._connection_attempts.pop(server_id,None)
+            self._connection_errors.pop(server_id,None)
             with self._lock:
                 self._bindings.pop(server_id, None)
                 self._gates.pop(server_id, None)
@@ -298,10 +393,15 @@ class MCPService:
         return self.registry.get(server_id)['enabled']
 
     def set_enabled(self, server_id, enabled):
-        with self._guard(server_id):
+        with self._lifecycle_gate(server_id):
             row = self.registry.set_enabled(server_id, enabled)
             self._clear_tokens(server_id)
-            return self._view(row)
+            self._connection_attempts.pop(server_id,None)
+            if enabled:self.ensure_connection(server_id)
+            else:
+                try:self.stop_server(server_id);self._connection_errors.pop(server_id,None)
+                except Exception as error:self._connection_errors[server_id]=getattr(error,'code','mcp_cleanup_failed')
+            return self.get_server(server_id)
 
     def list_tools(self, server_id):
         with self._guard(server_id) as row:

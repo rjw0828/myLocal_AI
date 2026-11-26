@@ -105,8 +105,12 @@ class MCPApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(endpoint, json={'enabled':True}).status_code, 403)
         self.assertEqual(self.request(endpoint, 'PUT', {'enabled':'yes'}).status_code, 400)
         self.assertTrue(self.request(endpoint, 'PUT', {'enabled':True}).json['server']['enabled'])
-        self.assertIsNone(self.service._runtime)
-        self.assertEqual(self.scenario.starts, 0)
+        self.assertIsNotNone(self.service._runtime)
+        self.assertEqual(self.scenario.starts, 1)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            self.assertTrue(all(pool.map(self.service.ensure_connection, [sid]*3)))
+        self.assertEqual(self.scenario.starts, 1)
+        self.assertEqual(self.scenario.calls, [])
         self.assertNotIn("executable", row)
         self.assertNotIn("args", row)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
@@ -186,12 +190,62 @@ class MCPApiTests(unittest.TestCase):
         self.assertEqual(response.json["servers"][0]["server_id"], sid)
         self.assertEqual(response.json["servers"][0]["status"]["state"], "STOPPED")
         self.assertIsNone(service._runtime)
-        self.assertEqual(service.registry.permission(sid, "echo")["allowed"], 1)
-        self.assertTrue(self.request(f"/mcp/servers/{sid}/permissions").json["permissions"][0]["allowed"])
+        self.assertTrue(service.registry.get(sid)['enabled'])
         self.assertEqual(self.scenario.starts, 1)
-        self.start(sid)
+        service.ensure_enabled_connections()
+        self.assertEqual(self.scenario.starts, 2)
         self.assertTrue(self.request(f"/mcp/servers/{sid}/tools").json["tools"][0]["allowed"])
         self.assertEqual(self.call(sid, token).status_code, 403)
+
+    def test_configuration_reconnects_and_rejects_old_approval(self):
+        sid=self.ready()
+        alternate=ServerConfig('alternate',sys.executable,('--different',),env={'PRIVATE_TOKEN':'never-show-this'})
+        self.service.replace_local_profiles([self.profile,alternate])
+        token=self.approve(sid)
+        endpoint=f'/mcp/servers/{sid}/configuration'
+        response=self.request(endpoint)
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertNotIn('never-show-this',response.get_data(as_text=True))
+        old=self.service.registry.get(sid)
+        denied=self.request(endpoint,'PUT',{'profile_id':'unreviewed'})
+        self.assertEqual(denied.status_code,403)
+        self.assertEqual(self.service.registry.get(sid),old)
+        response=self.request(endpoint,'PUT',{'profile_id':'alternate'})
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertTrue(response.json['server']['connected'])
+        self.assertEqual(self.scenario.starts,2)
+        self.assertGreater(self.service.registry.get(sid)['enabled_generation'],old['enabled_generation'])
+        self.assertEqual(self.call(sid,token).status_code,403)
+        self.assertEqual(self.scenario.calls,[])
+        with self.service._guard(sid,'call'):
+            blocked=self.request(endpoint,'PUT',{'profile_id':'echo-profile'})
+            self.assertEqual(blocked.status_code,429)
+        self.assertEqual(self.service.registry.get(sid)['profile_id'],'alternate')
+
+    def test_connection_failure_is_isolated_and_retries_are_bounded(self):
+        sid=self.register()
+        another=ServerConfig('other',sys.executable,('--other',))
+        self.service.replace_local_profiles([self.profile,another])
+        other=self.service.create_server('other','healthy')['server_id']
+        self.service.registry.set_enabled(sid,True)
+        self.service.registry.set_enabled(other,True)
+        original=self.service.start_server
+        failures=[]
+        def start(server_id):
+            if server_id==sid:
+                failures.append(server_id)
+                raise RuntimeError('secret fixture failure')
+            return original(server_id)
+        now=[0];self.service.clock=lambda:now[0]
+        with patch.object(self.service,'start_server',side_effect=start):
+            for instant in (0,1,5,10,15,100):
+                now[0]=instant;self.service.ensure_enabled_connections()
+        self.assertEqual(len(failures),3)
+        self.assertEqual(self.scenario.starts,1)
+        self.assertTrue(self.service.get_server(other)['connected'])
+        self.assertEqual(self.service.get_server(sid)['connection_error'],'mcp_connection_failed')
+        self.assertNotIn('secret fixture failure',json.dumps(self.service.list_servers()))
+        self.assertEqual(self.scenario.calls,[])
 
     def test_changed_local_execution_approval_blocks_saved_registration(self):
         sid = self.register()
@@ -203,11 +257,10 @@ class MCPApiTests(unittest.TestCase):
         self.assertEqual(self.request(f"/mcp/servers/{sid}/start", "POST", {}).status_code, 403)
         self.assertEqual(self.scenario.starts, 0)
 
-    def test_delete_requires_stop_and_does_not_recreate_deleted_id(self):
+    def test_delete_stops_idle_connection_and_does_not_recreate_deleted_id(self):
         sid = self.ready()
-        self.assertEqual(self.request(f"/mcp/servers/{sid}", "DELETE").status_code, 409)
-        self.request(f"/mcp/servers/{sid}/stop", "POST", {})
         self.assertEqual(self.request(f"/mcp/servers/{sid}", "DELETE").status_code, 200)
+        self.assertEqual(self.scenario.live,0)
         self.assertEqual(self.request(f"/mcp/servers/{sid}/start", "POST", {}).status_code, 404)
         self.assertEqual(self.request(f"/mcp/servers/{sid}", "DELETE").status_code, 404)
         self.assertEqual(self.request("/mcp/servers").json["servers"], [])
@@ -262,6 +315,9 @@ class MCPApiTests(unittest.TestCase):
         with ThreadPoolExecutor(1) as pool:
             outstanding = pool.submit(self.call, sid, token)
             self.assertTrue(self.scenario.call_started.wait(2))
+            self.assertTrue(self.service.get_server(sid)['executing'])
+            self.assertEqual(self.request(f'/mcp/servers/{sid}/configuration','PUT',
+                {'profile_id':'echo-profile'}).status_code,429)
             self.assertEqual(self.request(f"/mcp/servers/{sid}/tools").status_code, 429)
             self.service.shutdown()
             self.assertEqual(outstanding.result(3).status_code, 503)

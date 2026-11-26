@@ -56,6 +56,10 @@ class CatalogTests(unittest.TestCase):
     def test_invalid_schema(self):
         self.tool['input_schema'] = {'type': 'object', 'properties': {'value': {'type': 'madeup'}}}
         with self.assertRaises(CatalogError): self.catalog.discover()
+        self.service.add('healthy')
+        isolated=MCPCatalog(self.service,isolate_failures=True)
+        self.assertEqual([entry.server_id for entry in isolated.discover()],['healthy'])
+        self.assertEqual(self.service._connection_errors['alpha'],'mcp_catalog_unavailable')
 
     def test_external_ref_rejected(self):
         for key in ('$ref', '$dynamicRef'):

@@ -191,7 +191,8 @@ class ApprovalPolicy:
         verifier=getattr(self,'contract_verifier',None)
         if verifier is not None:scope=verifier(entry)
         if scope is not None:scope.validate(entry.original_name,args,entry.descriptor['input_schema'])
-        elif 'path' in args:raise PolicyError('Filesystem-like arguments need a verified Root contract')
+        elif (self.scope_required(entry) if hasattr(self,'scope_required') else 'path' in args):
+            raise PolicyError('Configured filesystem needs a verified Root contract')
         return scope
 
     @staticmethod

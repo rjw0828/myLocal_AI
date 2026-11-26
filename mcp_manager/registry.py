@@ -150,6 +150,13 @@ class MCPRegistry:
                        (int(enabled), server_id, int(enabled)))
             return self._decode(db.execute('SELECT * FROM mcp_servers WHERE server_id=?', (server_id,)).fetchone())
 
+    def configure(self, server_id, profile_id, config):
+        with self.connection(write=True) as db:
+            self._decode(db.execute('SELECT * FROM mcp_servers WHERE server_id=?',(server_id,)).fetchone())
+            db.execute('UPDATE mcp_servers SET profile_id=?,config_json=?,config_hash=?,enabled_generation=enabled_generation+1 WHERE server_id=?',
+                       (profile_id,canonical_json(config),fingerprint(config),server_id))
+            return self._decode(db.execute('SELECT * FROM mcp_servers WHERE server_id=?',(server_id,)).fetchone())
+
     def permission(self, server_id, tool_name):
         with self.connection() as db:
             row = db.execute("SELECT * FROM mcp_tool_permissions WHERE server_id=? AND tool_name=?",

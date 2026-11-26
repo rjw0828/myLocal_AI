@@ -8,6 +8,7 @@
       Object.assign(this, { nodes, tracker, context, canStart, question, answer, syncHistory, log, update });
       this.enabled = false; this.startingSession = null; this.intent = 0; this.dialogTicket = null; this.languages = new Map(); this.lastStates = new Map();
       this.lastErrors = new Map(); this.localReports = new WeakSet();
+      this.voiceRequests = new Map();
       const n = nodes;
       n.mode.addEventListener("click", () => {
         if (!this.enabled && !canStart(true)) return;
@@ -122,6 +123,9 @@
       this.update();
     }
     receive(name, event) {
+      const voice = this.voiceRequests.get(event.sessionId);
+      if (voice && name === 'created') voice.jobId = event.jobId;
+      const voiceJob = voice && voice.jobId === event.jobId;
       if (name === "state") {
         if (event.creating) this.lastErrors.delete(event.sessionId);
         if (event.state === "CANCELLED" && event.reservation_owned === false && event.unsettled === false) {
@@ -141,15 +145,20 @@
           ? "Completed · 대화 완료 · 실패/거부된 Tool이 있습니다. 호출별 결과를 확인해주세요."
           : "Completed · final answer received.");
         if (this.matches(event)) {
-          this.answer(event.sessionId, event.result, this.languages.get(event.sessionId));
+          if (!voiceJob) this.answer(event.sessionId, event.result, this.languages.get(event.sessionId));
           this.tracker.acknowledgeResult(event.sessionId, event.jobId);
-          this.syncHistory(event.sessionId);
+          if (!voiceJob) this.syncHistory(event.sessionId);
         }
       } else if (name !== "approval") {
         const code = ["tool_evidence_missing", "tool_time_mismatch"].includes(event.code) ? this.errorText({ code: event.code }) : event.code;
         this.log(name === "failed" || name === "uncertain" ? "ERROR" : "INFO", `${name}${code ? ` · ${code}` : ""}`);
       }
       this.render();
+      if (voiceJob && ['completed','failed','uncertain','cancelled'].includes(name)) {
+        this.voiceRequests.delete(event.sessionId);
+        if (name === 'completed' && !voice.cancelled && voice.valid() && this.matches(event)) voice.resolve(event.result);
+        else voice.reject(new ToolChatError(event.code || 'voice_cancelled'));
+      }
       if (name === "approval" && this.matches(event)) {
         // A replacement must be deliberately reopened: a pointer click aimed at
         // the previous dialog must never approve a newly substituted proposal.
@@ -179,27 +188,51 @@
       };
       return `${error.status ? `HTTP ${error.status} · ` : ""}${error.code || "unknown_error"} · ${hints[error.code] || "Request did not complete normally. Check status before proceeding."}`;
     }
-    async start(message, language) {
+    async start(message, language, { voice = false, valid = () => true } = {}) {
       const c = this.context();
-      if (!this.enabled || !c || !this.canStart(false) || this.blocked(c.sessionId)) return;
+      if (!this.enabled || !c || !this.canStart(false, voice) || this.blocked(c.sessionId)) {
+        if (voice) throw new ToolChatError('session_reserved');
+        return;
+      }
       const intent = ++this.intent;
+      let request;
       this.startingSession = c.sessionId; this.render();
       try {
         await this.tracker.setContext(c);
         // Context can change during the await; never start against its replacement.
         const now = this.context();
-        if (intent !== this.intent || !this.enabled || !this.canStart(false) || !now
-            || now.sessionId !== c.sessionId || now.generation !== c.generation || now.resetVersion !== c.resetVersion) return;
+        if (intent !== this.intent || !this.enabled || !this.canStart(false, voice) || !now || (voice && !valid())
+            || now.sessionId !== c.sessionId || now.generation !== c.generation || now.resetVersion !== c.resetVersion) {
+          if (voice) throw new ToolChatError('voice_cancelled');
+          return;
+        }
         this.languages.set(c.sessionId, language);
-        this.question(c.sessionId, message);
+        if (voice) {
+          request = { valid, cancelled:false };
+          request.promise = new Promise((resolve,reject) => Object.assign(request,{resolve,reject}));
+          request.promise.catch(() => {}); // Cancellation may arrive during the creation POST.
+          this.voiceRequests.set(c.sessionId,request);
+        } else this.question(c.sessionId, message);
         await this.tracker.start({ message, responseLanguage: language });
+        if (voice && (!valid() || request.cancelled)) await this.tracker.cancel(c.sessionId);
       }
-      catch (error) { this.reportError(error); }
+      catch (error) {
+        if (request) { request.reject(error); this.voiceRequests.delete(c.sessionId); }
+        if (voice) throw error;
+        this.reportError(error);
+      }
       finally {
         this.startingSession = null; this.render();
         const r = this.current();
-        if (r?.state === "COMPLETED" && !r.blocked && this.matches(r)) this.syncHistory(r.sessionId);
+        if (!voice && r?.state === "COMPLETED" && !r.blocked && this.matches(r)) this.syncHistory(r.sessionId);
       }
+      if (voice) return request.promise;
+    }
+    cancelVoice(sessionId) {
+      const request=this.voiceRequests.get(sessionId);
+      if (!request) return;
+      request.cancelled=true;request.reject(new ToolChatError('voice_cancelled'));
+      if (this.context()?.sessionId === sessionId) this.cancel();
     }
     async cancel() {
       this.intent += 1;

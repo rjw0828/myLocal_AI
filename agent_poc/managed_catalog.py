@@ -4,19 +4,24 @@ from .mcp_catalog import MCPCatalog, CatalogError
 
 class ManagedCatalog(MCPCatalog):
     def __init__(self, manager, exposed=None):
-        super().__init__(manager.service)
+        super().__init__(manager.service,isolate_failures=True)
         self.manager=manager
         self.exposed=None if exposed is None else frozenset(exposed)
 
     def discover(self):
+        self.service.ensure_enabled_connections()
         self.manager.refresh_contracts()
         entries=super().discover()
         result=[]
         for entry in entries:
             if self.exposed is not None and (entry.server_id,entry.original_name) not in self.exposed:continue
-            if self.manager.filesystem_like(entry):
-                scope=self.manager.verified_scope(entry)
-                if scope is None or scope.kind!='filesystem':continue
+            try:
+                if self.manager.filesystem_like(entry):
+                    scope=self.manager.verified_scope(entry)
+                    if scope is None or scope.kind!='filesystem':continue
+            except Exception:
+                self.service._connection_errors[entry.server_id]='mcp_execution_contract_invalid'
+                continue
             result.append(entry)
         return tuple(result)
 

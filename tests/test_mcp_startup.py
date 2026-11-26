@@ -32,6 +32,7 @@ class MCPStartupTests(unittest.TestCase):
             "print('LAUNCH_RESULT=' + json.dumps({\n"
             "    'approval': os.environ.get('LOCAL_AI_MCP_APPROVALS'),\n"
             "    'cwd': os.getcwd(),\n"
+            "    'agent': os.environ.get('LOCAL_AI_AGENT_ENABLED'),\n"
             "}))\n"
             "sys.exit(int(os.environ.get('LOCAL_AI_LAUNCH_TEST_EXIT', '0')))\n",
             encoding="utf-8",
@@ -43,14 +44,20 @@ class MCPStartupTests(unittest.TestCase):
         path.write_text(json.dumps({"profiles": [{"profile_id": name, "executable": sys.executable,
                                                   "args": [], "cwd": str(self.root)}]}), encoding="utf-8")
 
-    def launch(self, approval=None, exit_code=0):
+    def launch(self, approval=None, exit_code=0, argument=None):
         environment = os.environ.copy()
+        environment.pop('LOCAL_AI_AGENT_ENABLED',None)
+        environment.pop('LOCAL_AI_AGENT_PYTHON',None)
+        # Discovery stub only; the copied app never imports Agent or starts Flask.
+        (self.root/'pydantic_ai').mkdir(exist_ok=True)
+        (self.root/'pydantic_ai'/'__init__.py').write_text('')
+        environment['PYTHONPATH']=str(self.root)
         environment.pop("LOCAL_AI_MCP_APPROVALS", None)
         environment["LOCAL_AI_LAUNCH_TEST_EXIT"] = str(exit_code)
         if approval is not None:
             environment["LOCAL_AI_MCP_APPROVALS"] = str(approval)
         completed = subprocess.run(
-            [os.environ["COMSPEC"], "/d", "/c", str(self.root / "start_app.bat")],
+            [os.environ["COMSPEC"], "/d", "/c", str(self.root / "start_app.bat"), *([argument] if argument else [])],
             cwd=self.root.parent, env=environment, input="\n\n", text=True,
             capture_output=True, timeout=15,
         )
@@ -99,6 +106,8 @@ class MCPStartupTests(unittest.TestCase):
     def test_launcher_preserves_project_directory_and_python_exit_code(self):
         result = self.launch(exit_code=7)
         self.assertEqual(Path(result["cwd"]), self.root)
+        self.assertEqual(result['agent'],'1')
+        self.assertEqual(self.launch(argument='--no-agent')['agent'],'0')
 
 
 if __name__ == "__main__":

@@ -59,18 +59,28 @@
           <p class="notice" id="health-message" role="status" aria-live="polite">AI Serve Locals를 열면 상태를 조회합니다. Ollama 종료는 다른 프로그램에서 진행 중인 작업도 중단할 수 있습니다.</p>
           <section id="mcp-manager" class="mcp-manager" aria-labelledby="mcp-title">
             <div class="section-title-row"><div><p class="kicker">LOCAL TOOLS · STDIO</p><h2 id="mcp-title">MCP Server Manager</h2></div><div class="mcp-header-actions"><button id="mcp-help" type="button" class="secondary-button">Help?</button><button id="mcp-refresh" type="button" class="secondary-button">Refresh MCP</button><button id="mcp-add" type="button" class="secondary-button" aria-haspopup="dialog" aria-controls="mcp-dialog">+ Add Server</button></div></div>
-            <p class="notice">Only owner-approved local profiles can be registered. Servers never start automatically. Tool permission and approval for each call are separate. Stop does not undo tool side effects.</p>
+            <p class="notice">Enabled 서버는 Controller가 연결·Discovery를 관리합니다. Tool 실행 승인은 Session의 Manual / Allow All을 따릅니다. Configuration의 새 실행 설정은 기존 로컬 검토 절차를 유지합니다.</p>
             <p id="mcp-message" role="status" aria-live="polite">Open AI Serve Locals to load MCP registrations.</p>
             <section class="mcp-area" aria-labelledby="mcp-servers-title">
               <h3 id="mcp-servers-title" class="mcp-area-title">MCP Servers</h3>
               <div class="server-table-wrap"><table aria-labelledby="mcp-servers-title"><thead><tr><th>Name</th><th>Description / profile</th><th>Transport</th><th>Status</th><th>Actions</th></tr></thead><tbody id="mcp-servers"></tbody></table></div>
+            </section>
+            <section id="mcp-config" class="mcp-area" hidden>
+              <h3 class="mcp-area-title">MCP Configuration</h3>
+              <label for="mcp-config-profile">검토된 실행 설정</label><select id="mcp-config-profile"></select>
+              <label for="mcp-config-root">Filesystem Allowed Root · 읽기 전용 설정</label><input id="mcp-config-root" readonly placeholder="해당 없음 · 실행 설정에서 검토된 Root만 사용">
+              <p class="mcp-area-hint">명령·인수·환경 변수·Root를 바꾸려면 새 설정을 요청해 로컬 검토 후 적용하세요. 환경 값과 민감할 수 있는 인수는 표시하지 않습니다.</p>
+              <pre id="mcp-config-info"></pre>
+              <button id="mcp-config-save" type="button">Save configuration</button>
+              <button id="mcp-config-request" type="button">새 실행 설정 요청</button>
+              <button id="mcp-config-close" type="button">Close</button>
             </section>
             {% if agent_enabled %}
 
             {% endif %}
             <section class="mcp-tools mcp-area" aria-labelledby="mcp-tools-title">
               <h3 id="mcp-tools-title" class="mcp-area-title">Selected MCP Tools</h3>
-              <p id="mcp-tools-hint" class="mcp-area-hint">Select a running server to discover tools.</p>
+              <p id="mcp-tools-hint" class="mcp-area-hint">Enabled 서버를 선택하면 Controller가 연결과 Discovery를 관리합니다.</p>
               <div class="mcp-tools-layout">
                 <div id="mcp-tools" class="mcp-tool-list"></div>
                 <div class="mcp-tool-workspace">

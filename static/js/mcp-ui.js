@@ -8,9 +8,10 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     "call-panel", "arguments", "execute", "operation", "result", "refresh", "register", "dialog", "cancel", "submit",
     "profile-message", "register-message", "tools-hint", "registration-mode", "new-profile", "transport", "executable", "launch-arguments",
     "local-approval", "approval-help", "copy-approval", "copy-confirmation", "approval-confirmation", "copy-status", "auto-form", "raw-mode", "raw-panel", "form-notice", "selected-tool", "result-summary", "result-details",
-    "help", "help-dialog", "help-title", "help-content", "help-close", "argument-help"].map((id) => [id, node(`mcp-${id}`)]));
+    "config", "config-profile", "config-root", "config-info", "config-save", "config-close", "config-request", "help", "help-dialog", "help-title", "help-content", "help-close", "argument-help"].map((id) => [id, node(`mcp-${id}`)]));
   let servers = [], tools = [], selected = null, tool = null, busy = false, visible = false, generation = 0;
   let profileCount = 0, registrationSaved = false;
+  let configurationServer = null, configurationProfiles = [], editingServer = null;
   let argumentForm = null, profileRequest = null, copyingApproval = false;
   const approvalCommand = (record) => "& " + record.approval_command.map((part) => "'" + part.replace(/'/g, "''") + "'").join(" ");
   const newProfileMode = () => ui["registration-mode"].value === "new";
@@ -46,6 +47,8 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
   const update = () => {
     ui.refresh.disabled = busy;
     ui.add.disabled = busy;
+    ui['config-profile'].disabled = busy;
+    for (const field of ['config-save','config-close','config-request']) ui[field].disabled = busy;
     ui.submit.disabled = busy || (!newProfileMode() && !ui.profile.value) || registrationSaved;
     ui.cancel.disabled = busy;
     ui.profile.disabled = busy || newProfileMode(); ui.profile.required = !newProfileMode();
@@ -110,30 +113,42 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     for (const server of servers) {
       const id = server.server_id, row = make("tr"), actions = make("td");
       row.append(make("td", server.name), make("td", `Approved profile: ${server.profile_id}`), make("td", server.transport),
-        make("td", `${state(server)}${pending.has(id) ? " · completion unconfirmed" : ""}${server.execution_approved ? "" : " · profile not approved"}`));
+        make("td", `${server.executing ? "Executing" : server.connection_error ? "Connection error: " + server.connection_error : server.enabled ? (server.connected ? "Enabled / Ready" : "Enabled / Connecting on demand") : "Disabled"}${pending.has(id) ? " · completion unconfirmed" : ""}${server.execution_approved ? "" : " · profile not approved"}`));
       button(actions, server.enabled ? "Enabled ON" : "Enabled OFF", async () => {
-        await request(`${base(id)}/enabled`, "PUT", { enabled: !server.enabled });
+        const changed=await request(`${base(id)}/enabled`, "PUT", { enabled: !server.enabled });
+        if (!changed.server.enabled && state(changed.server)==="STOPPED") clearPending(id);
         if (selected === id) clearTools();
         await loadServers();
         announce("SUCCESS", "서버 Enabled 설정 저장 완료. 연결 상태는 별도입니다.");
-      }, pending.has(id));
-      button(actions, "Start", async () => {
+      }, false);
+      button(actions, "Configuration", async () => {
+        const version = generation;
+        const data = await request(`${base(id)}/configuration`);
+        if (!visible || version !== generation) return;
+        configurationServer=id; configurationProfiles=data.configuration.profiles;
+        ui['config-profile'].replaceChildren();
+        for (const profile of configurationProfiles) { const option=make('option', profile.profile_id); option.value=profile.profile_id; ui['config-profile'].append(option); }
+        ui['config-profile'].value=data.configuration.profile_id;
+        showConfiguration(); ui.config.hidden=false;
+      }, pending.has(id) || server.executing);
+      const diagnostics=make('details');diagnostics.append(make('summary','Diagnostics'));actions.append(diagnostics);
+      button(diagnostics, "Start", async () => {
         announce("RUNNING", "Starting selected MCP server.");
         await request(managed ? `${management(id)}/connect` : `${base(id)}/start`, "POST", managed ? { confirmed: true } : {});
         await loadServers(); announce("SUCCESS", "MCP server started and discovery completed.");
       }, state(server) !== "STOPPED" || !server.execution_approved || pending.has(id));
-      button(actions, "Stop", async () => {
+      button(diagnostics, "Stop", async () => {
         if (!confirm(`Stop MCP server '${server.name}'? In-flight tool side effects cannot be undone.`)) return;
         await request(managed ? `${management(id)}/stop` : `${base(id)}/stop`, "POST", {}); clearPending(id);
         if (selected === id) clearTools(); await loadServers(); announce("SUCCESS", "MCP server stopped.");
       }, state(server) === "STOPPED" && !pending.has(id));
-      button(actions, "Tools", async () => selectServer(id), state(server) !== "RUNNING" || !server.execution_approved);
+      button(actions, "Tools", async () => selectServer(id), !server.enabled || !server.execution_approved);
       button(actions, "Delete", async () => {
         if (!confirm(`Delete MCP registration '${server.name}' and its configuration?`)) return;
         await request(managed ? management(id) : base(id), "DELETE"); clearPending(id);
         if (selected === id) { selected = null; generation += 1; clearTools(); }
         await loadServers(); announce("SUCCESS", "MCP registration deleted.");
-      }, state(server) !== "STOPPED" || pending.has(id));
+      }, pending.has(id) || server.executing);
       row.append(actions); ui.servers.append(row);
     }
     update();
@@ -141,7 +156,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
   const clearTools = ({ preserveResult = false } = {}) => {
     tools = []; tool = null; ui.tools.replaceChildren(); ui["call-panel"].hidden = true;
     argumentForm = null; ui["auto-form"].replaceChildren(); ui["raw-mode"].checked = false;
-    ui["tools-hint"].textContent = "Select a running server to discover tools.";
+    ui["tools-hint"].textContent = "Select an Enabled server to discover tools; Controller manages its connection.";
     if (!preserveResult) { ui.result.textContent = ""; ui["result-summary"].textContent = "Select a tool to enter arguments and inspect results."; ui["result-details"].open = false; }
     update();
   };
@@ -197,6 +212,8 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     const data = await request(`${base(id)}/tools`);
     if (!visible || selected !== id || generation !== version) return;
     if (!Array.isArray(data.tools)) throw new Error("Invalid MCP tool list.");
+    await loadServers();
+    if (!visible || selected !== id || generation !== version) return;
     if (typeof CustomEvent === "function" && document.dispatchEvent) document.dispatchEvent(new CustomEvent("local-ai-mcp-selected", { detail: { serverId: id } }));
     tools = data.tools; ui["tools-hint"].textContent = `Server: ${currentServer()?.name || id}`;
     renderTools(); announce("SUCCESS", "MCP tool discovery completed.");
@@ -216,6 +233,26 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
     }
     announce("INFO", "MCP registrations refreshed. Discover Tools again for current server settings/schema.");
   });
+  const showConfiguration = () => {
+    const profile=configurationProfiles.find(p=>p.profile_id===ui['config-profile'].value);
+    ui['config-root'].value=profile?.root || '';
+    ui['config-info'].textContent=JSON.stringify(profile || {},null,2);
+  };
+  ui['config-profile'].addEventListener('change',showConfiguration);
+  ui['config-close'].addEventListener('click',()=>{ configurationServer=null;ui.config.hidden=true; });
+  ui['config-save'].addEventListener('click',()=>run(async()=>{
+    if(!configurationServer || !visible) return;
+    await request(`${base(configurationServer)}/configuration`,'PUT',{profile_id:ui['config-profile'].value});
+    if(selected===configurationServer){generation+=1;clearTools();}
+    ui.config.hidden=true;configurationServer=null;await loadServers();
+    announce('SUCCESS','Configuration saved; Controller refreshed the connection.');
+  }));
+  ui['config-request'].addEventListener('click',()=>{
+    if(busy || !visible || !configurationServer || ui.dialog.open) return;
+    editingServer=configurationServer; ui['registration-mode'].value='new';
+    ui.name.value=servers.find(s=>s.server_id===editingServer)?.name || 'MCP configuration';
+    ui.dialog.showModal();update();
+  });
   const closeRegistration = () => {
     if (ui.dialog.open) ui.dialog.close();
     if (visible) ui.add.focus();
@@ -225,14 +262,14 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
       await request(`/mcp/profile-requests/${encodeURIComponent(profileRequest.request_id)}`, "DELETE");
       profileRequest = null; ui["local-approval"].hidden = true;
     }
-    closeRegistration();
+    editingServer=null; closeRegistration();
   });
   ui.add.addEventListener("click", () => {
     if (busy || !visible || ui.dialog.open) return;
     ui["register-message"].textContent = "";
     ui["profile-message"].textContent = profileCount ? "Only owner-approved local profiles can be registered."
       : "No approved profiles. Configure LOCAL_AI_MCP_APPROVALS and restart Controller, then Refresh MCP.";
-    ui.dialog.showModal(); update();
+    editingServer=null; ui.dialog.showModal(); update();
   });
   ui.cancel.addEventListener("click", cancelRegistration);
   for (const kind of ["copy-approval", "copy-confirmation"]) ui[kind].addEventListener("click", async () => {
@@ -284,7 +321,10 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
         profile = data.request.profile_id;
       }
       if (!profile) throw new Error("Select an approved profile.");
-      await request("/mcp/servers", "POST", { profile_id: profile, ...(name ? { name } : {}) });
+      const configuring=Boolean(editingServer);
+      if (editingServer) await request(`${base(editingServer)}/configuration`, 'PUT', {profile_id:profile});
+      else await request("/mcp/servers", "POST", { profile_id: profile, ...(name ? { name } : {}) });
+      editingServer=null; ui.config.hidden=true; configurationServer=null;
       registrationSaved = true;
       // If list refresh fails, keep the form open and prevent a duplicate POST.
       ui["register-message"].textContent = "Server registered. Refreshing the server list; do not register again.";
@@ -295,7 +335,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
         profileRequest = null; ui["local-approval"].hidden = true;
       }
       ui.name.value = ""; ui.profile.value = ""; registrationSaved = false;
-      announce("SUCCESS", "MCP server registered; it remains stopped until Start.");
+      announce("SUCCESS", configuring ? "Configuration saved; Controller manages its connection." : "MCP server registered. Switch Enabled ON for automatic connection and discovery.");
     });
   });
   ui.execute.addEventListener("click", () => run(async () => {
@@ -368,7 +408,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
         make("p", `Required arguments: ${(Array.isArray(info.input_schema?.required) ? info.input_schema.required : []).join(", ") || "none"}`),
         make("p", "Example only — review before use:"), make("pre", JSON.stringify(mcpSchemaEditor.example(info.input_schema), null, 2)));
     } else ui["help-content"].append(make("p", "1. Add Server: select an approved profile, or submit a new executable/argument list for review in a separate local terminal."),
-      make("p", "2. Register stays STOPPED. Start explicitly, then discover Tools. Select a tool name to expand it; select again to collapse."),
+      make("p", "2. Enable a registered server for Controller-managed connection and Discovery. Start/Stop are optional diagnostics. Configuration selects reviewed settings; new command/Root settings use the existing local review."),
       make("p", "3. Enable the server to expose its discovered tools. Review description/schema and fill required arguments; use Advanced Raw JSON for unsupported schemas. Each call still follows the existing approval policy."),
       make("p", "4. Approve & Run once is a manual administrator diagnostic. Review exact arguments each time. One-use approvals expire after 120 seconds; side effects are not rolled back."),
       make("p", "5. Timeout/connection loss never triggers automatic retries. Check the pending result or explicitly Stop before reconnecting. Schema refresh clears inputs; Enabled and the current schema are rechecked before execution."));
@@ -379,7 +419,7 @@ function createMCPConsole({ document, fetch, confirm, storage, clipboard = typeo
   ui["help-close"].addEventListener("click", () => ui["help-dialog"].close());
   ui.refresh.addEventListener("click", refresh);
   const open = () => { visible = true; generation += 1; return refresh(); };
-  const leave = () => { visible = false; closeRegistration(); if (ui["help-dialog"].open) ui["help-dialog"].close(); generation += 1; tool = null; ui["call-panel"].hidden = true; update(); };
+  const leave = () => { visible = false; configurationServer=null;ui.config.hidden=true; closeRegistration(); if (ui["help-dialog"].open) ui["help-dialog"].close(); generation += 1; tool = null; ui["call-panel"].hidden = true; update(); };
   node("server-button").addEventListener("click", open);
   node("guide-button").addEventListener("click", leave);
   update();

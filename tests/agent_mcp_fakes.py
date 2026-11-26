@@ -13,6 +13,7 @@ SCHEMA = {'type': 'object', 'properties': {'value': {'type': 'integer'}},
 class FakeMCPService:
     def __init__(self):
         self.servers = {}
+        self._connection_errors = {}
         self.executions = 0
         self.validations = 0
         self.approval = None
@@ -30,6 +31,7 @@ class FakeMCPService:
 
     def list_servers(self):
         return [{'server_id': sid, 'status': {'state': server['state']},
+                 'enabled': server.get('enabled',True),
                  'execution_approved': server['approved']} for sid, server in self.servers.items()]
 
     def catalog_tools(self, sid):

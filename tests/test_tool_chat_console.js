@@ -178,16 +178,73 @@ test("A to B to A cancels previous job and late completion never appends its ans
   d.resolve(packet({ job: old })); await flush();
   assert.ok(!text(f.nodes["conversation-output"]).includes("LATE SECRET")); assert.equal(count(f, jobUrl + "/cancel"), 1);
 });
-test("Tool mode blocks automatic Voice but manual STT can fill Tool Chat input", async () => {
+test("Tool mode preserves manual STT and routes Voice through Agent before TTS", async () => {
   const f = await setup(); f.unlock(); f.nodes["tool-chat-mode"].click(); f.nodes["voice-mode"].click();
-  assert.equal(f.nodes["voice-mode"].getAttribute("aria-pressed"), "false"); await f.recordStop();
-  assert.equal(f.nodes.message.value, "recognized"); assert.equal(count(f, "/tool-chat/jobs"), 0);
-  enter(f); await flush(); assert.equal(count(f, "/tool-chat/jobs"), 1);
+  assert.equal(f.nodes["voice-mode"].getAttribute("aria-pressed"), "true"); await f.recordStop();
+  assert.equal(f.nodes.message.value, ""); assert.equal(count(f, "/tool-chat/jobs"), 1);
+  assert.equal(count(f,'/chat'),0);assert.equal(count(f,'/voice/synthesize'),0);
+  const body=JSON.parse(f.requests.find(r=>r.url==='/tool-chat/jobs').options.body);
+  assert.equal(body.message,'recognized');assert.equal(body.session_id,f.nodes['session-id'].value);
+  await f.complete('일반 음성 답변');
+  assert.equal(count(f,'/voice/synthesize'),1);
+  assert.equal(f.nodes['conversation-output'].querySelectorAll('.is-assistant').length,1);
+  await f.check();assert.equal(count(f,'/voice/synthesize'),1);
+  f.audios[0].onended();await flush();
+  await f.recordStop();
+  await f.complete('자동 승인 Tool 최종 답변',[{status:'SUCCEEDED',tool_name:'read_file'}]);
+  assert.equal(count(f,jobUrl+'/approval'),0);assert.equal(count(f,'/voice/synthesize'),2);
+  f.audios[1].onended();await flush();
+  f.nodes['voice-mode'].click();await f.recordStop();
+  assert.equal(f.nodes.message.value,'recognized');assert.equal(count(f,'/tool-chat/jobs'),2);
 });
-test("automatic Voice blocks enabling Tool mode and creates no Tool Chat", async () => {
+test("Voice and Tool mode coexist and approve each Tool before final TTS", async () => {
   const f = await setup(); f.unlock(); f.enable(); f.nodes["tool-chat-mode"].click();
-  assert.equal(f.nodes["tool-chat-mode"].getAttribute("aria-pressed"), "false");
-  await f.recordStop(); assert.equal(count(f, "/tool-chat/jobs"), 0); assert.equal(count(f, "/chat"), 1);
+  assert.equal(f.nodes["tool-chat-mode"].getAttribute("aria-pressed"), "true");
+  await f.recordStop();assert.equal(count(f,'/tool-chat/jobs'),1);assert.equal(count(f,'/chat'),0);
+  await f.waiting();assert.equal(f.nodes['tool-chat-dialog'].open,true);assert.equal(count(f,'/voice/synthesize'),0);
+  f.nodes['tool-chat-allow'].click();await flush();
+  await f.waiting(p('second-call'));await f.check();assert.equal(count(f,'/voice/synthesize'),0);
+  f.nodes['tool-chat-allow'].click();await flush();
+  await f.complete('승인된 최종 답변');
+  assert.equal(count(f,jobUrl+'/approval'),2);assert.equal(count(f,'/voice/synthesize'),1);
+});
+
+test("Voice Deny and Agent failure never synthesize a success answer",async()=>{
+  for (const deny of [true,false]) {
+    const f=await setup();f.unlock();f.enable();f.nodes['tool-chat-mode'].click();await f.recordStop();
+    if(deny){await f.waiting();f.nodes['tool-chat-deny'].click();await flush();}
+    else{Object.assign(f.state(),{state:'FAILED',pending:null,reservation_owned:false,error_code:'agent_run_failed'});await f.check();}
+    assert.equal(count(f,'/voice/synthesize'),0);
+    assert.equal(f.nodes['conversation-output'].querySelectorAll('.is-assistant').length,0);
+    assert.equal(f.nodes['cancel-voice-turn'].disabled,true);
+  }
+});
+
+test("Voice cancel during Agent creation observes and cancels receipt without TTS",async()=>{
+  const f=await setup(),receipt=deferred(),create=f.handlers['/tool-chat/jobs'];
+  f.handlers['/tool-chat/jobs']=async request=>{const result=create(request);await receipt.promise;return result;};
+  f.unlock();f.enable();f.nodes['tool-chat-mode'].click();await f.recordStop();
+  f.nodes['cancel-voice-turn'].click();await flush();receipt.resolve();await flush();
+  assert.equal(count(f,jobUrl+'/cancel'),1);assert.equal(count(f,'/voice/synthesize'),0);
+});
+
+test("Voice Session switch and Reset reject late Agent results and TTS",async()=>{
+  for (const reset of [true,false]) {
+    const f=await setup({extraSessions:[{session_id:'B',number:2,title:'B'}]});
+    f.unlock();f.enable();f.nodes['tool-chat-mode'].click();await f.recordStop();await f.waiting();
+    f.nodes['tool-chat-allow'].click();await flush();
+    const late=deferred(),old={...f.state(),state:'COMPLETED',pending:null,reservation_owned:false,
+      result:{session_id:'default',message:'LATE VOICE SECRET',model:'fixture',revision:8,metrics:{},elapsed_seconds:1}};
+    let reads=0;f.handlers[jobUrl]=()=>++reads===1?late.promise:packet({job:f.state()});
+    await f.check(); // Keep an old RUNNING observation outstanding across cancellation.
+    if(reset){f.nodes['reset-session'].click();await flush();}
+    else await chooseSession(f,'B');
+    late.resolve(packet({job:old}));await flush();
+    assert.equal(count(f,'/voice/synthesize'),0);
+    assert.ok(!text(f.nodes['conversation-output']).includes('LATE VOICE SECRET'));
+    assert.equal(count(f,jobUrl+'/cancel'),1);
+    if(reset)assert.equal(count(f,'/sessions/default/reset'),1);
+  }
 });
 test("creation reply loss stays blocked across mode OFF and never retries POST", async () => {
   const f = await setup(); f.handlers["/tool-chat/jobs"] = () => { throw new Error("lost"); }; await f.start();

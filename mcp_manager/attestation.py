@@ -64,3 +64,20 @@ def verified_filesystem(config, connection_info):
             or artifact!=info.get('filesystem_artifact')):
         raise ValueError('Filesystem connection contract is unverified or changed')
     return artifact
+
+
+def filesystem_configuration(config):
+    """Recognize the reviewed server even when its Root/flags are invalid."""
+    if not config.args:return False
+    script=Path(config.args[0])
+    try:
+        return script.name=='index.js' and json.loads((script.parent.parent/'package.json').read_text(encoding='utf-8')).get('name')=='@modelcontextprotocol/server-filesystem'
+    except (OSError,ValueError,TypeError):return False
+
+
+def validate_filesystem_configuration(config):
+    """Validate recognized filesystem settings; generic MCP is unaffected."""
+    if not filesystem_configuration(config):return
+    artifact=filesystem_artifact(config)
+    if not artifact or (artifact['version'],artifact['digest'])!=REVIEWED_FILESYSTEM:
+        raise ValueError('Reviewed read-only filesystem artifact and a valid local Root are required')

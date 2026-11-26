@@ -50,11 +50,9 @@ class DynamicTests(unittest.TestCase):
         fresh=next(e for e in catalog.discover() if e.server_id==sid and e.original_name=='read_file')
         self.assertNotEqual(fresh.identity,entry.identity)
         self.manager.stop_server(sid)
-        self.assertFalse(any(e.server_id==sid for e in catalog.discover()))
-        self.manager.test_connection(sid,confirm=lambda _:True)
         restarted=next(e for e in catalog.discover() if e.server_id==sid and e.original_name=='read_file')
         self.assertNotEqual(fresh.identity,restarted.identity)
-        self.manager.stop_server(sid);self.manager.delete_server(sid)
+        self.manager.delete_server(sid)
         self.assertFalse(any(e.server_id==sid for e in catalog.discover()))
         self.assertEqual(self.runtime.sends,0)
 

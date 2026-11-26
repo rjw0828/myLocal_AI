@@ -37,7 +37,7 @@ function fixture(managed = false) {
   nodes["tool-chat-mode"].dataset.agentEnabled = String(managed);
   const requests = [], prompts = [], handlers = {}, stored = new Map(), timers = [], copied = [];
   const clipboard = { writeText: async (value) => { copied.push(value); } };
-  const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, enabled: false, status: { state: "RUNNING" } };
+  const server = { server_id: "s1", name: "Local echo", profile_id: "local-echo", transport: "stdio", execution_approved: true, enabled: true, connected:true, status: { state: "RUNNING" } };
   const info = { name: "echo", description: "Returns text", input_schema: { type: "object", properties: { text: { type: "string" } } }, allowed: false };
   let registrations = [server], allowConfirmation = true;
   const fetch = async (url, options) => {
@@ -46,12 +46,12 @@ function fixture(managed = false) {
     if (handlers[url]) return handlers[url](options, data);
     if (url === "/mcp/profiles") return packet({ profiles: [{ profile_id: "local-echo" }] });
     if (url === "/mcp/servers" && options.method === "GET") return packet({ servers: registrations });
-    if (url === "/mcp/servers" && options.method === "POST") { server.status.state = "STOPPED"; return packet({ server }, 201); }
+    if (url === "/mcp/servers" && options.method === "POST") { server.status.state = "STOPPED"; server.enabled=false; server.connected=false; return packet({ server }, 201); }
     if (url.endsWith("/start")) { server.status.state = "RUNNING"; return packet({ server }); }
     if (url.endsWith("/connect")) { server.status.state = "RUNNING"; return packet({ result: { started: true } }); }
     if (url.endsWith("/stop")) { server.status.state = "STOPPED"; return packet({ server }); }
     if (options.method === "DELETE") { registrations = []; return packet({ status: "deleted" }); }
-    if (url.endsWith("/enabled")) { server.enabled = data.enabled; info.allowed = data.enabled; return packet({ server }); }
+    if (url.endsWith("/enabled")) { server.enabled = data.enabled; info.allowed = data.enabled; server.connected=data.enabled; server.status.state=data.enabled?"RUNNING":"STOPPED"; return packet({ server }); }
     if (url.endsWith("/approve")) return packet({ approval_token: "one-use-token" });
     if (url.endsWith("/call")) return packet({ result: { content: [{ text: "echo result" }], is_error: false }, elapsed_seconds: .05 });
     if (url.includes("/operations/")) return packet({ operation: { state: "SUCCEEDED", result: { content: [{ text: "late answer" }] } } });
@@ -66,16 +66,46 @@ function fixture(managed = false) {
     const item = nodes[`mcp-${container}`].querySelectorAll("button").find((item) => item.textContent === label);
     assert.ok(item, `Missing button: ${label}; status=${nodes["mcp-message"].textContent}`); return item;
   };
-  const ready = async () => { await ui.open(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); await button("servers", "Enabled OFF").fire(); await button("servers", "Tools").fire(); await button("tools", "echo").fire(); nodes["mcp-raw-mode"].checked = true; await nodes["mcp-raw-mode"].fire("change"); nodes["mcp-arguments"].value = '{"text":"hi"}'; };
+  const ready = async () => { await ui.open(); if(!server.enabled)await button('servers','Enabled OFF').fire(); await button('servers','Tools').fire(); await button('tools','echo').fire(); nodes['mcp-raw-mode'].checked=true; await nodes['mcp-raw-mode'].fire('change'); nodes['mcp-arguments'].value='{"text":"hi"}'; };
   return { ui, nodes, requests, prompts, handlers, server, info, stored, timers, clipboard, copied, button, ready, confirm: (value) => { allowConfirmation = value; } };
 }
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const calls = (f, suffix) => f.requests.filter((item) => item.url.endsWith(suffix));
+
+test("Configuration uses reviewed profiles, saves once and never executes a Tool", async () => {
+  const f=fixture(), endpoint='/mcp/servers/s1/configuration', saving=deferred();
+  f.handlers[endpoint]=async(options,data)=>{
+    if(options.method==='GET')return packet({configuration:{profile_id:'local-echo',profiles:[
+      {profile_id:'local-echo',root:null,environment_keys:[]},
+      {profile_id:'reviewed-root',root:'C:/isolated',environment_keys:['TOKEN']}]}});
+    assert.deepEqual(data,{profile_id:'reviewed-root'});await saving.promise;
+    f.server.profile_id=data.profile_id;return packet({server:f.server});
+  };
+  await f.ui.open();await f.button('servers','Configuration').fire();
+  assert.equal(f.nodes['mcp-config'].hidden,false);
+  f.nodes['mcp-config-profile'].value='reviewed-root';await f.nodes['mcp-config-profile'].fire('change');
+  assert.equal(f.nodes['mcp-config-root'].value,'C:/isolated');
+  const first=f.nodes['mcp-config-save'].fire();await flush();
+  assert.equal(f.nodes['mcp-config-save'].disabled,true);
+  await f.nodes['mcp-config-save'].fire('click',true);
+  saving.resolve();await first;
+  assert.equal(f.requests.filter(r=>r.url===endpoint && r.options.method==='PUT').length,1);
+  assert.equal(f.server.profile_id,'reviewed-root');assert.equal(f.nodes['mcp-config'].hidden,true);
+  assert.equal(calls(f,'/call').length+calls(f,'/start').length,0);
+});
+
+test("Configuration replies after leaving do not reopen the settings panel", async()=>{
+  const f=fixture(), response=deferred();
+  f.handlers['/mcp/servers/s1/configuration']=()=>response.promise;
+  await f.ui.open();const opening=f.button('servers','Configuration').fire();await flush();f.ui.leave();
+  response.resolve(packet({configuration:{profiles:[],profile_id:'local-echo'}}));await opening;
+  assert.equal(f.nodes['mcp-config'].hidden,true);
+});
 test("initialization is lazy; opening reads profiles and servers without starting", async () => {
   const f = fixture(); assert.equal(f.requests.length, 0); await f.ui.open();
   assert.deepEqual(f.requests.map((r) => r.url), ["/mcp/profiles", "/mcp/servers"]);
-  assert.match(f.nodes["mcp-servers"].textContent, /Local echo.*local-echo.*stdio.*RUNNING/);
+  assert.match(f.nodes["mcp-servers"].textContent, /Local echo.*local-echo.*stdio.*Ready/);
 });
 test("every MCP fetch preserves the console header and same-origin policy", async () => {
   const f = fixture(); await f.ready(); await f.nodes["mcp-execute"].fire();
@@ -97,7 +127,7 @@ test("no approved profiles keeps registration disabled and explains local setup"
   assert.match(f.nodes["mcp-profile-message"].textContent, /LOCAL_AI_MCP_APPROVALS/);
 });
 test("Start/Stop/Delete respect lifecycle and delete cancellation", async () => {
-  const f = fixture(); await f.ui.open(); assert.equal(f.button("servers", "Delete").disabled, true);
+  const f = fixture(); await f.ui.open(); assert.equal(f.button("servers", "Delete").disabled, false);
   await f.button("servers", "Stop").fire(); assert.equal(f.server.status.state, "STOPPED");
   await f.button("servers", "Start").fire(); assert.equal(f.server.status.state, "RUNNING");
   await f.button("servers", "Stop").fire(); f.confirm(false); await f.button("servers", "Delete").fire();
@@ -107,21 +137,22 @@ test("Start/Stop/Delete respect lifecycle and delete cancellation", async () => 
 test("Agent host keeps lifecycle management and uses server Enabled", async () => {
   const f = fixture(true); await f.ui.open(); await f.button("servers", "Stop").fire();
   await f.button("servers", "Start").fire(); await f.button("servers", "Tools").fire();
-  await f.button("servers", "Enabled OFF").fire(); await f.button("servers", "Tools").fire();
+  await f.button("servers", "Enabled ON").fire(); await f.button("servers", "Enabled OFF").fire(); await f.button("servers", "Tools").fire();
   assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/connect")));
   assert.ok(f.prompts.every(p => !p.startsWith('Start and discover')));
   assert.ok(f.requests.some((r) => r.url.endsWith("/management/servers/s1/stop")));
   assert.ok(f.requests.some((r) => r.url.endsWith("/mcp/servers/s1/enabled")));
   assert.equal(calls(f, "/call").length, 0);
 });
-test("server Enabled controls all tools independently of connection state", async () => {
-  const f = fixture(); await f.ui.open(); await f.button("servers", "Tools").fire();
-  for (const text of [/Returns text/, /properties/, /Disabled/]) assert.match(f.nodes["mcp-tools"].textContent, text);
-  await f.button("tools", "echo").fire(); assert.equal(f.nodes["mcp-execute"].disabled, true);
-  await f.button("servers", "Enabled OFF").fire(); await f.button("servers", "Tools").fire(); assert.equal(f.info.allowed, true);
-  await f.button("tools", "echo").fire();
-  await f.button("servers", "Enabled ON").fire(); assert.equal(f.info.allowed, false);
+test("Enabled controls automatic connection without a Start request", async () => {
+  const f=fixture();f.server.enabled=false;f.server.status.state='STOPPED';f.server.connected=false;
+  await f.ui.open();assert.equal(f.button('servers','Tools').disabled,true);
+  await f.button('servers','Enabled OFF').fire();await f.button('servers','Tools').fire();await f.button('tools','echo').fire();
+  assert.equal(f.server.status.state,'RUNNING');assert.equal(f.nodes['mcp-execute'].disabled,false);
+  await f.button('servers','Enabled ON').fire();assert.equal(f.server.status.state,'STOPPED');
+  assert.equal(calls(f,'/start').length,0);assert.equal(calls(f,'/connect').length,0);
 });
+
 test("confirmed manual call uses one approval and one call with identical arguments", async () => {
   const f = fixture(); await f.ready(); assert.equal(calls(f, "/call").length, 0); await f.nodes["mcp-execute"].fire();
   assert.equal(calls(f, "/approve").length, 1); assert.equal(calls(f, "/call").length, 1);
@@ -272,10 +303,10 @@ test("refresh failure after successful registration blocks a duplicate until res
 });
 test("tool discovery updates the small hint and never replaces the section title", async () => {
   const f = fixture(); f.nodes["mcp-tools-title"].textContent = "Selected MCP Tools";
-  await f.ui.open(); assert.equal(f.nodes["mcp-tools-hint"].textContent, "Select a running server to discover tools.");
+  await f.ui.open(); assert.equal(f.nodes["mcp-tools-hint"].textContent, "Select an Enabled server to discover tools; Controller manages its connection.");
   await f.button("servers", "Tools").fire(); assert.match(f.nodes["mcp-tools-hint"].textContent, /Server: Local echo/);
   assert.equal(f.nodes["mcp-tools-title"].textContent, "Selected MCP Tools");
-  await f.ui.refresh(); assert.equal(f.nodes["mcp-tools-hint"].textContent, "Select a running server to discover tools.");
+  await f.ui.refresh(); assert.equal(f.nodes["mcp-tools-hint"].textContent, "Select an Enabled server to discover tools; Controller manages its connection.");
   assert.equal(f.nodes["mcp-tools-title"].textContent, "Selected MCP Tools");
 });
 const autoReady = async (f) => { await f.ready(); f.nodes["mcp-raw-mode"].checked = false; await f.nodes["mcp-raw-mode"].fire("change"); };

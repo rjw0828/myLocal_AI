@@ -142,7 +142,14 @@ def install_mcp(app, *, session_database_path, control_guard, database_path=None
 
     @api.get("/servers/<server_id>/tools")
     def tools(server_id):
+        service.ensure_connection(server_id)
         return jsonify(tools=service.list_tools(server_id))
+
+    @api.route('/servers/<server_id>/configuration',methods=['GET','PUT'])
+    def configuration(server_id):
+        if request.method=='GET':return jsonify(configuration=service.configuration(server_id))
+        data=body(required=('profile_id',))
+        return jsonify(server=service.configure(server_id,text(data['profile_id'])))
 
     @api.get("/servers/<server_id>/permissions")
     def permissions(server_id):

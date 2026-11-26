@@ -1,5 +1,14 @@
 # Pydantic AI 통합 Known Issues
 
+## STEP D/E 현재 상태 — 2026-11-27
+
+- MCP 자동 연결·Configuration 및 Voice → Agent → 최종 응답 → TTS 연결은 Fake/Flask/JavaScript 모형으로 확인했다. 이번 변경의 실제 Voice 장치·모델·MCP 통합 실측은 미검증이며, 과거 단계의 실서버 성공 기록으로 대체하지 않는다.
+- 기존 Quick 결과: STEP D Python 84 PASS / JavaScript 62 PASS, STEP E Python 37 PASS / 1 환경 실패 및 JavaScript 130 PASS, 시작 스크립트 5 PASS. 단계별 테스트가 겹치므로 누적 총계로 합산하지 않는다. Commit/Push 작업에서는 테스트를 재실행하지 않았다.
+- STEP E의 `test_concurrent_api_request_returns_busy` 실패는 테스트용 Agent 가상환경의 `piper` 누락으로 Fake 합성에 진입하지 못한 환경 제한이다. 같은 환경의 `faster_whisper`도 없다. 실패를 PASS나 Skip으로 바꾸지 않았으며 의존성을 설치하지 않았다.
+- 현재 `start_app.bat`은 Agent 활성화를 기본으로 시도한다. 프로젝트 가상환경을 우선 사용하고, 필요하면 기존 형제 Agent 실험 가상환경을 탐색한다. `LOCAL_AI_AGENT_PYTHON`으로 명시할 수 있으며 `--no-agent`는 일반 Chat 모드를 유지한다. Agent·Voice 패키지가 없는 환경의 기능 제한은 시작 경고로 표시된다.
+- 앞서 보고된 MCP 서버 목록 미표시 문제는 원인 미확정으로 남아 있다. 이번 Commit에서 DB 복구·서버 재등록·운영 승인 파일 변경은 수행하지 않았다.
+- 기존 500자 자동 TTS 제한과 Qwen의 짧은 질문 Tool 선택 불안정 등 아래 미해결 항목은 유지한다. 아래의 기본 비활성화 설명 등은 이전 단계 기록이며, 현재 시작 방식은 위 항목을 따른다.
+
 2026-11-24 기준. Pydantic AI를 최신 Agent 엔진으로 채택한다. 아래 제한은 사용자가 수용한 개인 개발 환경의 Known Issues이며, 모든 사전 실측 완료를 로컬 Merge 조건으로 요구하지 않는다. 일반 Console의 Agent 기능은 기본 비활성이고 `start_app.bat --agent`로 선택 활성화한다. 기존 격리 검증 호스트도 유지한다.
 
 ## Agent Console UX-1 검증 범위

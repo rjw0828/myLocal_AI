@@ -59,6 +59,7 @@ class MCPManagement:
         manager._lock = RLock()
         manager.catalog = MCPCatalog(service)
         policy.contract_verifier = lambda entry: manager.verified_scope(entry, live=False)
+        policy.scope_required = lambda entry:manager.filesystem_like(entry,include_options=False)
         return manager
 
     def __init__(self, base, *, runtime_factory, contract_binder=None, session_database_path=None):
@@ -85,10 +86,17 @@ class MCPManagement:
         # the pinned entry. Recheck disk provenance without reentering the
         # manager's connection lock from the owner task.
         self.policy.contract_verifier=lambda entry:self.verified_scope(entry,live=False)
+        self.policy.scope_required=lambda entry:self.filesystem_like(entry,include_options=False)
 
-    @staticmethod
-    def filesystem_like(entry):
-        return entry.original_name in {'read_file','read_text_file','list_directory'} or 'path' in entry.descriptor['input_schema'].get('properties',{})
+    def filesystem_like(self,entry,*,include_options=True):
+        scope=self.policy._contracts.get(entry.server_id)
+        if scope is not None and scope.kind=='filesystem':return True
+        if include_options:
+            options=self.policy.snapshot().get('server_options',{}).get(entry.server_id,{})
+            if options.get('root'):return True
+        from mcp_manager.attestation import filesystem_configuration
+        row=self.service.registry.get(entry.server_id)
+        return filesystem_configuration(ServerConfig(entry.server_id,**row['config']))
 
     def _remember_contract(self,sid,scope,context,proof=None):
         identity=None
@@ -118,17 +126,33 @@ class MCPManagement:
 
     def refresh_contracts(self):
         """Attest ordinary Registry connections without starting or trusting them."""
-        if self._binder is not None:return  # explicitly reviewed fixture/pilot contracts
         from mcp_manager.attestation import verified_filesystem
         for row in self.list_servers():
             sid=row['server_id']
             if row['status']['state']!='RUNNING':continue
-            context=self.service.execution_context(sid)
+            try:context=self.service.execution_context(sid)
+            except Exception:
+                self.service._connection_errors[sid]='mcp_connection_unavailable'
+                continue
             old=self._contract_records.get(sid)
             if old and old[:2]==(context['config_hash'],context['connection_generation']):continue
             config=ServerConfig(sid,**context['config'])
             scope=None;proof=None
-            if config.args and Path(config.args[0]).name=='index.js':
+            if self._binder is not None:
+                options=self.details(sid)['options']
+                binding=fingerprint({'config':config_data(config),'options':options})
+                previous=self._scopes.get(sid)
+                try:
+                    if previous is not None and previous[0]!=binding:raise ManagementError('Execution contract changed')
+                    scope=previous[1] if previous is not None else self._binder(self._get_runtime(),config,options)
+                    if scope is not None and str(scope.root or '')!=str(options['root'] or ''):
+                        raise ManagementError('Verified Root differs from configured Root')
+                except Exception:
+                    self.service._connection_errors[sid]='mcp_execution_contract_invalid'
+                    self.policy.bind_contract(sid,None)
+                    continue
+                self._scopes[sid]=(binding,scope)
+            elif config.args and Path(config.args[0]).name=='index.js':
                 try:
                     proof=verified_filesystem(config,context['connection_info'])
                     root=experimental_path(proof['root'])

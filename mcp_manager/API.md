@@ -1,5 +1,39 @@
 # MCP-2 Registry + Flask API
 
+## Architecture STEP D additions (current behavior)
+
+- `PUT /mcp/servers/<id>/enabled` retains the existing JSON boolean. ON ensures
+  connection/discovery; OFF persists revocation first and then stops the connection.
+  Connection failure is reported in `server.connection_error`, without revoking the
+  user's Enabled choice. `connected` and `executing` are separate read-only fields.
+- `GET /mcp/servers/<id>/tools` can establish an Enabled connection before discovery.
+  Disabled servers never auto-start. Listing servers/profiles alone remains passive.
+- `GET /mcp/servers/<id>/configuration` returns reviewed profile choices, executable,
+  argument count, cwd, environment **keys only**, and verified-profile Root metadata.
+- `PUT /mcp/servers/<id>/configuration` accepts exactly `{"profile_id":"..."}`.
+  Only locally approved profiles are accepted. Active Tool admission returns 429;
+  an idle connection is stopped, its pinned configuration and generation updated,
+  then an Enabled server reconnects/discovers. Old grants and Catalog identities
+  cannot authorize the replacement connection. Failure leaves the saved configuration
+  with a diagnostic rather than reverting or replaying a Tool.
+- New execution settings use the existing local-owner profile request/approval
+  mechanism. HTTP cannot approve execution or edit the approval manifest. There is
+  no generic environment-value editor; use an already reviewed profile.
+- Idle connected registrations can be deleted directly; Controller handles stopping.
+  Stop/Start endpoints remain diagnostic APIs and do not change Enabled.
+- After Console restart, Agent Catalog preparation restores Enabled connections
+  lazily. A failed server is omitted from new Catalogs without hiding healthy peers.
+  Attempts are serialized per server, limited to three per failed configuration /
+  Enabled generation, and separated by at least five seconds. No background retry
+  loop or automatic Tool retry is introduced. OFF/ON resets the connection attempt
+  budget. An uncertain connection requires explicit cleanup before reconnection.
+
+All existing loopback/control-header/origin checks apply. Filesystem artifact,
+read-only Root, schema, connection-generation and Session admission checks remain
+required. No additional database schema migration is necessary for STEP D.
+
+The following MCP-2 sections describe the historical manual lifecycle.
+
 The backend uses the MCP-1 core and the already installed `mcp==2.3.0`. It adds no
 packages, UI controls, external server installers, or automatic LLM tool calls.
 For a new environment, install the root `requirements-mcp.txt` alongside the

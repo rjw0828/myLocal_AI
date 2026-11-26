@@ -1,5 +1,23 @@
 # Local AI Lab
 
+### Voice와 Agent Conversation — Architecture STEP E
+
+기존 Console에서 Input을 Unlock하고 **Tool Chat ON + Voice Conversation ON**으로 설정한 뒤 Record → Stop & Send를 사용합니다. STT 결과는 현재 Session의 기존 Agent Job 경로로 전달되며, 같은 모델 선택과 Manual / Allow All Permission을 따릅니다. Manual 승인 대기 중에는 TTS를 시작하지 않고 기존 승인창을 사용합니다. 최종 답변만 화면에 한 번 표시하고 기존 TTS로 읽습니다. Tool Chat OFF의 Voice는 기존 `/chat` 경로를 유지합니다.
+
+Cancel Voice, Session 전환 및 Reset/Delete는 이전 음성 작업의 추가 출력과 TTS를 차단합니다. 이미 전송된 Tool 작업의 부작용까지 롤백하지는 않습니다. 새 STT/TTS 엔진이나 Agent Loop는 추가하지 않았습니다. 기존 500자 자동 TTS 제한은 유지하며, 더 긴 답변은 화면과 History에서 확인합니다. STEP E는 Fake/Flask/브라우저 API 모형으로 검증하며 실제 마이크·스피커·모델·MCP 실측은 별도입니다.
+
+STEP E Quick 결과: JavaScript 130 PASS, Python 37 PASS / 1 환경 실패. 테스트용 Agent 가상환경의 `piper` 누락으로 TTS 동시성 테스트가 Fake 합성에 진입하지 못했습니다. `faster_whisper`도 이 환경에는 없습니다. 의존성을 설치하거나 테스트를 Skip으로 변경하지 않았으며, 실제 Voice 사용 환경의 설치 여부는 별도로 확인해야 합니다. 앞서 보고된 MCP 목록 미표시 문제는 STEP E에서 조사·수정하지 않았습니다.
+
+### 현재 MCP 사용 흐름 — Architecture STEP D
+
+MCP Manager에서 서버를 등록하고 **Enabled ON**으로 전환하면 Controller가 연결과 Discovery를 수행합니다. 재시작 후에는 저장된 Enabled 설정을 유지하며, 다음 Agent Run의 Catalog 준비 시 연결을 자동 확보합니다. 서버 프로세스의 연결 상태는 Ready, 실제 Tool 작업 중에는 Executing으로 구분합니다. Start/Stop은 상세 Diagnostics에만 남아 있습니다.
+
+**Configuration**에서 로컬 검토가 완료된 실행 프로필을 선택하여 저장할 수 있습니다. 명령·인수·환경 변수·Filesystem Root 변경은 기존 로컬 실행 검토 절차를 거칩니다. 새 실행 설정 요청도 같은 등록 팝업을 재사용하며, 승인 후 기존 서버의 설정에 적용합니다. 환경 변수 값과 기존 인수 원문은 설정 조회에 노출하지 않습니다. 임의 환경 변수 편집 폼은 제공하지 않습니다.
+
+Enabled OFF는 새 Tool 호출을 차단하고 연결을 정리합니다. 설정 변경은 실행 중 호출이 없을 때만 적용되며, 연결 재생성과 Discovery 후 다음 Run에 반영됩니다. 이전 승인·Catalog는 재사용하지 않습니다. Session의 Manual / Allow All 및 기존 Root 보호는 유지됩니다.
+
+실패한 연결은 서버별로 격리하며, 최소 5초 간격으로 필요할 때 최대 3회 시도합니다. 자동 반복 작업이나 실패한 Tool의 재실행은 없습니다. 재시도 한도에 도달하면 원인을 해결한 뒤 Enabled OFF → ON으로 명시적으로 다시 시도합니다. 첫 Catalog 준비 시 연결 지연이 있을 수 있습니다. 아래 MCP-2/3 절은 과거 단계 기록이며 현재 사용 흐름은 이 절을 따릅니다. STEP D는 Fake/Flask/DOM 테스트로 검증했으며 실서버·브라우저 검증 및 STEP E Voice Agent 통합은 수행하지 않았습니다.
+
 최신 Agent 엔진은 Pydantic AI입니다. 기존 Console의 Chat/Voice, Session/History/Reset, MCP Registry/Manager와 수동 실행을 유지합니다. Agent는 기본 비활성이며 별도 호스트에서 선택 활성화합니다. [실행 및 통합 안내](INTEGRATION.md)와 [Known Issues](KNOWN_ISSUES.md)를 먼저 확인하세요.
 
 ## MCP 관리와 Agent 통합

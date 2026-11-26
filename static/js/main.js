@@ -1083,7 +1083,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const startRecording = async () => {
     if (deletingAll || deleteAllUncertain) return;
-    if (toolChat?.blocked(sessionInput.value) || (voiceModeEnabled && toolChat?.enabled)) return;
+    if (toolChat?.blocked(sessionInput.value)) return;
     const locked = lockButton.getAttribute("aria-pressed") === "true";
     if (!sessionInput.value || deletingSessions.has(sessionInput.value) || deletedSessions.has(sessionInput.value)) return;
     if (locked || requestRunning || isVoiceBusy()) return;
@@ -1202,8 +1202,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     resetSessionButton.disabled = !sessionId || unavailable || requestRunning || (voiceBusy && !automatic);
     ttsLanguage.disabled = voiceBusy;
-    voiceModeButton.disabled = modelChanging || requestRunning || toolBlocked || Boolean(toolChat?.enabled) || (voiceBusy && !automatic);
-    $("#tool-chat-mode").disabled = $("#tool-chat-mode").dataset.agentEnabled !== "true" || requestRunning || voiceBusy || voiceModeEnabled;
+    voiceModeButton.disabled = modelChanging || requestRunning || toolBlocked || (voiceBusy && !automatic);
+    $("#tool-chat-mode").disabled = $("#tool-chat-mode").dataset.agentEnabled !== "true" || requestRunning || voiceBusy;
     cancelVoiceTurnButton.disabled = !automatic;
     const messages = conversations.get(currentConversationSession) || [];
     conversationOutput.querySelectorAll(".tts-play-button").forEach((button) => {
@@ -1429,6 +1429,7 @@ document.addEventListener("DOMContentLoaded", () => {
       sessionId: sessionInput.value.trim(), revision: sessionRevision,
       draft: messageInput.value, sttLanguage: sttLanguage.value,
       responseLanguage: ttsLanguage.value,
+      agent: Boolean(toolChat?.enabled),
     }),
     state: (state, detail, turn) => {
       voiceState = state.toLowerCase();
@@ -1441,6 +1442,7 @@ document.addEventListener("DOMContentLoaded", () => {
       updateInputState();
     },
     cleanup: (turn) => {
+      if (turn.agentPending) toolChat?.cancelVoice(turn.sessionId);
       turn.controllers.forEach((controller) => controller.abort());
       turn.controllers.clear();
       if (recordingTurn === turn) discardRecording();
@@ -1454,9 +1456,19 @@ document.addEventListener("DOMContentLoaded", () => {
     },
     question: (turn, text) => {
       appendConversation(turn.sessionId, "user", text);
-      appendLog("RUNNING", "POST /chat", `Voice turn · Language: ${turn.responseLanguage}.`);
+      appendLog("RUNNING", turn.agent ? "TOOL CHAT" : "POST /chat", `Voice turn · Language: ${turn.responseLanguage}.`);
     },
-    chat: (turn, text) => sendChat(turn.sessionId, text, turn.responseLanguage, true),
+    chat: async (turn, text) => {
+      if (!turn.agent) return sendChat(turn.sessionId, text, turn.responseLanguage, true);
+      turn.agentPending=true;
+      historyLoadId += 1;
+      try {
+        return await toolChat.start(text,turn.responseLanguage,{voice:true,valid:()=>voiceTurns.valid(turn)});
+      } finally {
+        turn.agentPending=false;
+        refreshSessionList().catch(error=>appendLog('ERROR','GET /sessions',errorMessage(error)));
+      }
+    },
     answer: (turn, text) => appendConversation(turn.sessionId, "assistant", text, turn.responseLanguage),
     speak: async (turn, message, onSpeaking) => {
       const button = conversationOutput.querySelector(`[data-message-id="${message.id}"]`);
@@ -1475,7 +1487,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   voiceModeButton.addEventListener("click", () => {
-    if (toolChat?.enabled || toolChat?.blocked(sessionInput.value)) return;
+    if (toolChat?.blocked(sessionInput.value)) return;
     if (requestRunning || (isVoiceBusy() && !voiceTurns.active)) return;
     voiceModeEnabled = !voiceModeEnabled;
     if (!voiceModeEnabled) voiceTurns.cancel("Voice Conversation switched OFF.");
@@ -1616,7 +1628,7 @@ document.addEventListener("DOMContentLoaded", () => {
       path: "approval-path", scope: "approval-scope", notice: "approval-notice" }).map(([key, id]) => [key, $(`#tool-chat-${id}`)])),
     context: () => sessionInput.value ? { sessionId: sessionInput.value.trim(), generation: sessionRevision,
       resetVersion: sessionResetVersions.get(sessionInput.value.trim()) || 0 } : null,
-    canStart: (modeOnly) => !voiceModeEnabled && !isVoiceBusy() && !requestRunning
+    canStart: (modeOnly, voice = false) => (!isVoiceBusy() || (voice && voiceTurns.active && voiceTurns.valid(voiceTurns.active))) && !requestRunning
       && (modeOnly || (lockButton.getAttribute("aria-pressed") !== "true" && Boolean(sessionInput.value)
         && !preparingDeleteAll && !deletingAll && !deleteAllUncertain && !deletingSessions.has(sessionInput.value)
         && !deletedSessions.has(sessionInput.value) && !chatGuard.reason(sessionInput.value))),

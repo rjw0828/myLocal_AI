@@ -100,6 +100,7 @@
       const turn = {
         id: ++this.generation, sessionId: context.sessionId, revision: context.revision,
         sttLanguage: context.sttLanguage, responseLanguage: context.responseLanguage,
+        agent: Boolean(context.agent),
         initialDraft: context.draft, cancelled: false, state: "Recording",
         controllers: new Set(), mediaRecorder: null, mediaStream: null,
         audio: null, objectUrl: null,
