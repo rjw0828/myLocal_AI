@@ -1,5 +1,9 @@
 # Local AI Lab
 
+현재 실행은 **`start_app.bat` 하나**를 사용합니다. Chat·Voice·Agent 모두 프로젝트의 `.venv`로 실행하며 실험 Worktree 가상환경으로 우회하지 않습니다. 과거 `LOCAL_AI_AGENT_PYTHON` / `LOCAL_AI_AGENT_ENABLED` 환경변수가 남아 있어도 기본 배치 동작을 바꾸지 않습니다. `--no-agent`는 일반 Chat만 사용할 때의 선택 옵션입니다. 실행 중인 이전 Console은 종료한 뒤 배치를 다시 실행해야 변경이 적용됩니다.
+
+2026-11-27 실사용 환경 정리: 기존 Voice 패키지를 유지하고 Agent 의존성을 기존 lock 버전에 맞춰 프로젝트 `.venv`에 추가했습니다. `pip check`, Voice/Agent/시작 배치 Quick 34개 및 실제 배치의 격리 HTTP 시작 검사가 통과했습니다. 마이크·스피커·모델 추론·Tool 호출은 이 검사에서 실행하지 않았습니다.
+
 ### Voice와 Agent Conversation — Architecture STEP E
 
 기존 Console에서 Input을 Unlock하고 **Tool Chat ON + Voice Conversation ON**으로 설정한 뒤 Record → Stop & Send를 사용합니다. STT 결과는 현재 Session의 기존 Agent Job 경로로 전달되며, 같은 모델 선택과 Manual / Allow All Permission을 따릅니다. Manual 승인 대기 중에는 TTS를 시작하지 않고 기존 승인창을 사용합니다. 최종 답변만 화면에 한 번 표시하고 기존 TTS로 읽습니다. Tool Chat OFF의 Voice는 기존 `/chat` 경로를 유지합니다.

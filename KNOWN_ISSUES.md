@@ -2,10 +2,14 @@
 
 ## STEP D/E 현재 상태 — 2026-11-27
 
+- 실사용 환경의 분리 문제를 정리했다. 프로젝트 `.venv`에는 Voice가, 실험 `.venv`에는 Agent만 있어 정상 WAV가 `numpy` 누락 때문에 `invalid_audio`로 처리됐다. 같은 정상 WAV의 디코딩으로 원인을 재현했다. 기존 Voice 패키지가 있는 프로젝트 `.venv`에 검증된 Agent 패키지를 추가하고 배치를 해당 환경 하나로 고정했다. `pip check`, 관련 Quick 34개 및 실제 배치 격리 시작 검사는 통과했다. 아래의 `piper` 누락 실패는 당시 실험 환경의 과거 결과이며 PASS로 소급 변경하지 않는다. 실제 마이크·스피커·Agent Tool 통합 실측은 여전히 별도다.
+
+- 00:30의 Gemma `stage=CATALOG / ValueError`는 기존 정책 DB의 `AUTO_ALLOW_SAFE` 값을 새 Session Permission enum으로 읽지 못한 호환성 결함으로 재현했다. 구형 `ASK_EVERY_TIME` / `AUTO_ALLOW_SAFE`는 첫 정책 트랜잭션에서 Manual 메타데이터로 원자적으로 전환하고, 기존 신뢰·서버 override 기록은 보존하되 실행 승인에는 사용하지 않는다. 반복 조회는 재이관하지 않으며 Session Allow All은 해당 Session 설정만 따른다. 운영 DB 직접 수정 없이 복사본에서 Catalog 통과·Gemma Run 생성까지 검증했고, 실제 추론 직전에 중단했다. 시작 배치 격리 실행과 관련 Fake/Flask 4개도 통과했다. 이 수정의 실제 시간 조회·최종 답변은 아직 미검증이다.
+
 - MCP 자동 연결·Configuration 및 Voice → Agent → 최종 응답 → TTS 연결은 Fake/Flask/JavaScript 모형으로 확인했다. 이번 변경의 실제 Voice 장치·모델·MCP 통합 실측은 미검증이며, 과거 단계의 실서버 성공 기록으로 대체하지 않는다.
 - 기존 Quick 결과: STEP D Python 84 PASS / JavaScript 62 PASS, STEP E Python 37 PASS / 1 환경 실패 및 JavaScript 130 PASS, 시작 스크립트 5 PASS. 단계별 테스트가 겹치므로 누적 총계로 합산하지 않는다. Commit/Push 작업에서는 테스트를 재실행하지 않았다.
 - STEP E의 `test_concurrent_api_request_returns_busy` 실패는 테스트용 Agent 가상환경의 `piper` 누락으로 Fake 합성에 진입하지 못한 환경 제한이다. 같은 환경의 `faster_whisper`도 없다. 실패를 PASS나 Skip으로 바꾸지 않았으며 의존성을 설치하지 않았다.
-- 현재 `start_app.bat`은 Agent 활성화를 기본으로 시도한다. 프로젝트 가상환경을 우선 사용하고, 필요하면 기존 형제 Agent 실험 가상환경을 탐색한다. `LOCAL_AI_AGENT_PYTHON`으로 명시할 수 있으며 `--no-agent`는 일반 Chat 모드를 유지한다. Agent·Voice 패키지가 없는 환경의 기능 제한은 시작 경고로 표시된다.
+- 현재 `start_app.bat`은 프로젝트 `.venv` 하나로 Agent 활성화를 기본 시도한다. 형제 실험 환경 자동 탐색과 `LOCAL_AI_AGENT_PYTHON` 우회는 제거했다. 기본 실행은 과거 Agent 환경변수에도 영향을 받지 않으며, `--no-agent`는 일반 Chat 모드를 유지한다. Agent·Voice 패키지가 없는 환경의 기능 제한은 시작 경고로 표시된다.
 - 앞서 보고된 MCP 서버 목록 미표시 문제는 원인 미확정으로 남아 있다. 이번 Commit에서 DB 복구·서버 재등록·운영 승인 파일 변경은 수행하지 않았다.
 - 기존 500자 자동 TTS 제한과 Qwen의 짧은 질문 Tool 선택 불안정 등 아래 미해결 항목은 유지한다. 아래의 기본 비활성화 설명 등은 이전 단계 기록이며, 현재 시작 방식은 위 항목을 따른다.
 

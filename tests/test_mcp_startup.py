@@ -33,6 +33,7 @@ class MCPStartupTests(unittest.TestCase):
             "    'approval': os.environ.get('LOCAL_AI_MCP_APPROVALS'),\n"
             "    'cwd': os.getcwd(),\n"
             "    'agent': os.environ.get('LOCAL_AI_AGENT_ENABLED'),\n"
+            "    'python': sys.executable,\n"
             "}))\n"
             "sys.exit(int(os.environ.get('LOCAL_AI_LAUNCH_TEST_EXIT', '0')))\n",
             encoding="utf-8",
@@ -47,7 +48,9 @@ class MCPStartupTests(unittest.TestCase):
     def launch(self, approval=None, exit_code=0, argument=None):
         environment = os.environ.copy()
         environment.pop('LOCAL_AI_AGENT_ENABLED',None)
-        environment.pop('LOCAL_AI_AGENT_PYTHON',None)
+        # Old terminal settings must not redirect Voice back to an Agent-only env.
+        environment['LOCAL_AI_AGENT_PYTHON']=str(self.root/'missing-old-environment.exe')
+        environment['LOCAL_AI_AGENT_ENABLED']='0'
         # Discovery stub only; the copied app never imports Agent or starts Flask.
         (self.root/'pydantic_ai').mkdir(exist_ok=True)
         (self.root/'pydantic_ai'/'__init__.py').write_text('')
@@ -107,6 +110,7 @@ class MCPStartupTests(unittest.TestCase):
         result = self.launch(exit_code=7)
         self.assertEqual(Path(result["cwd"]), self.root)
         self.assertEqual(result['agent'],'1')
+        self.assertEqual(Path(result['python']).resolve(),(self.root/'.venv/Scripts/python.exe').resolve())
         self.assertEqual(self.launch(argument='--no-agent')['agent'],'0')
 
 

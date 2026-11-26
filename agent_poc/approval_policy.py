@@ -84,10 +84,21 @@ class ApprovalPolicy:
             row=db.execute('SELECT epoch,revision,settings FROM policy WHERE id=1').fetchone()
             if row is None: raise PolicyError('Policy record missing')
             state=json.loads(row[2])
+            revision_number=row[1]
+            legacy_mode=state['project_mode']
+            if legacy_mode in ('ASK_EVERY_TIME','AUTO_ALLOW_SAFE'):
+                # Session Permission owns execution now. Preserve legacy records,
+                # but never turn an old auto-safe setting into session Allow All.
+                state.setdefault('legacy_project_mode',legacy_mode)
+                state['project_mode']=ApprovalMode.MANUAL.value
+                state['auto_enabled']=False
+                db.execute('UPDATE policy SET revision=revision+1,settings=? WHERE id=1',(canonical_json(state),))
+                revision_number+=1
+                self._audit(db,'legacy_session_permission_migrated',{'previous_mode':legacy_mode,'mode':'MANUAL'})
             ApprovalMode(state['project_mode'])
             if type(state['auto_enabled']) is not bool or not isinstance(state['trusts'],dict):
                 raise PolicyError('Invalid policy data')
-            yield db,state,f'{row[0]}:{row[1]}'
+            yield db,state,f'{row[0]}:{revision_number}'
             db.commit()
         except Exception:
             db.rollback();raise

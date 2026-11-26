@@ -22,9 +22,40 @@ HEADERS={'X-Local-AI-Control':'web-console'}
 
 
 class AgentWebTests(unittest.TestCase):
+    def test_legacy_policy_migration_preserves_records_without_auto_trust(self):
+        import json
+        import sqlite3
+        from contextlib import closing
+        for legacy in ('ASK_EVERY_TIME','AUTO_ALLOW_SAFE'):
+            with self.subTest(mode=legacy):
+                policy=self.manager.policy
+                with closing(sqlite3.connect(policy.path)) as db:
+                    raw=db.execute('SELECT settings FROM policy WHERE id=1').fetchone()[0]
+                    settings=json.loads(raw)
+                    settings.update(project_mode=legacy,auto_enabled=True,
+                        overrides={self.sid:'ALLOW_ALL'},trusts={'legacy-record':{'server_id':self.sid,'tool':'get_current_time'}})
+                    settings.pop('legacy_project_mode',None)
+                    db.execute('UPDATE policy SET settings=? WHERE id=1',(json.dumps(settings),));db.commit()
+                    before=db.execute("SELECT count(*) FROM audit WHERE event='legacy_session_permission_migrated'").fetchone()[0]
+                state=policy.snapshot()
+                self.assertEqual(state['project_mode'],'MANUAL')
+                self.assertEqual(state['legacy_project_mode'],legacy)
+                self.assertFalse(state['auto_enabled'])
+                self.assertEqual(state['trusts'],settings['trusts'])
+                self.assertEqual(state['overrides'],settings['overrides'])
+                self.assertEqual(policy.snapshot()['revision'],state['revision'])
+                self.assertEqual(len([a for a in policy.audit_log() if a['event']=='legacy_session_permission_migrated']),before+1)
+                entry=self.backend.catalog.discover()[0]
+                self.assertEqual(policy.evaluate(entry,{},permission={'mode':'MANUAL','manual_generation':0}).action,'ASK')
+                self.assertEqual(policy.evaluate(entry,{},permission={'mode':'ALLOW_ALL','manual_generation':0}).action,'AUTO_APPROVE')
+                self.assertEqual(policy.evaluate(entry,{}).action,'ASK')
+                self.assertEqual(self.runtime.sends,0)
+
     def setUp(self):
         self.temp=TemporaryDirectory(prefix='local-ai-agent-web-');self.addCleanup(self.temp.cleanup)
         self.base=Path(self.temp.name);self.runtime=OwnerFakeRuntime(prepared=True)
+        self.fixture_python=self.base/'python.exe'
+        self.fixture_python.write_bytes(b'OwnerFakeRuntime fixture; never executed')
         self.runtime.tools=[ToolInfo('get_current_time','Get actual current time',{'type':'object','properties':{
             'timezone':{'type':'string','default':'Asia/Seoul'}}})]
         self.runtime.result=ToolCallResult(({'type':'text','text':'{"timezone":"Asia/Seoul","datetime":"2026-11-20T09:30:00+09:00"}'},),None,False)
@@ -34,7 +65,7 @@ class AgentWebTests(unittest.TestCase):
         self.manager=MCPManagement(self.base/'management',runtime_factory=lambda:self.runtime,contract_binder=bind,
             session_database_path=self.base/'sessions.sqlite3')
         self.addCleanup(self.manager.shutdown)
-        self.sid=self.manager.add_server('Time',sys.executable,['-m','mcp_server_time','--local-timezone=Asia/Seoul'],confirm=lambda _:True)['server_id']
+        self.sid=self.manager.add_server('Time',str(self.fixture_python),['-m','mcp_server_time','--local-timezone=Asia/Seoul'],confirm=lambda _:True)['server_id']
         self.manager.test_connection(self.sid,confirm=lambda _:True)
         self.manager.set_enabled(self.sid,True)
         self.behavior='tools';self.history_seen=[];self.model_started=Event();self.model_release=Event()

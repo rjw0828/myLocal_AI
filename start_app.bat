@@ -5,8 +5,8 @@ rem Run from this batch file's directory, regardless of current directory.
 cd /d "%~dp0"
 
 set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-rem Agent is the default; preserve an explicit environment choice or --no-agent.
-if not defined LOCAL_AI_AGENT_ENABLED set "LOCAL_AI_AGENT_ENABLED=1"
+rem One project environment for Chat, Voice and Agent. No sibling-env fallback.
+set "LOCAL_AI_AGENT_ENABLED=1"
 if "%~1"=="--agent" set "LOCAL_AI_AGENT_ENABLED=1"
 if "%~1"=="--no-agent" set "LOCAL_AI_AGENT_ENABLED=0"
 if not "%~1"=="" if not "%~1"=="--agent" if not "%~1"=="--no-agent" (
@@ -14,23 +14,11 @@ if not "%~1"=="" if not "%~1"=="--agent" if not "%~1"=="--no-agent" (
     exit /b 2
 )
 if not "%LOCAL_AI_AGENT_ENABLED%"=="1" goto python_ready
-if defined LOCAL_AI_AGENT_PYTHON (
-    set "PYTHON_EXE=%LOCAL_AI_AGENT_PYTHON%"
-    goto agent_probe
-)
-rem Prefer this project's environment. Reuse the sibling experiment env only
-rem when the project env cannot provide Pydantic AI; never install packages here.
-if exist "%PYTHON_EXE%" (
-    "%PYTHON_EXE%" -B -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('pydantic_ai') is None)" >nul 2>&1
-    if not errorlevel 1 goto agent_probe
-)
-if exist "%~dp0..\myLocalAI-agent-exp\.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0..\myLocalAI-agent-exp\.venv\Scripts\python.exe"
-:agent_probe
 if not exist "%PYTHON_EXE%" goto python_ready
 "%PYTHON_EXE%" -B -c "import importlib.util,sys; sys.exit(importlib.util.find_spec('pydantic_ai') is None)" >nul 2>&1
 if errorlevel 1 (
     echo [WARNING] Pydantic AI is unavailable. Starting ordinary Chat without Agent.
-    echo [WARNING] Set LOCAL_AI_AGENT_PYTHON to an Agent-capable Python environment.
+    echo [WARNING] Agent dependencies must be available in the project .venv.
     set "LOCAL_AI_AGENT_ENABLED=0"
 )
 :python_ready
